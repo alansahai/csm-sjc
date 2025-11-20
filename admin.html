@@ -1,0 +1,695 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Catechism Admin Panel</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.9.3/html2pdf.bundle.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link rel="stylesheet" href="css/style.css">
+
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+
+    <script src="/firebase.config.js"></script>
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/12.5.0/firebase-app.js";
+        import {
+            getFirestore, collection, getDocs, query, where, addDoc,
+            setDoc, doc, getDoc, deleteDoc, onSnapshot, updateDoc,
+            deleteField, orderBy, limit, writeBatch
+        } from "https://www.gstatic.com/firebasejs/12.5.0/firebase-firestore.js";
+        import { getAuth, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/12.5.0/firebase-auth.js";
+
+        const firebaseConfig = window.__FIREBASE_CONFIG__;
+        if (!firebaseConfig) {
+            console.error("Firebase config is missing!");
+            Swal.fire('Configuration Error', 'Firebase config is missing. The app cannot start.', 'error');
+        } else {
+            const app = initializeApp(firebaseConfig);
+            const db = getFirestore(app);
+            const auth = getAuth(app);
+
+            // Expose all modules to the global window
+            Object.assign(window, {
+                db, auth, collection, getDocs, query, where, addDoc, setDoc,
+                doc, getDoc, deleteDoc, onSnapshot, updateDoc, deleteField,
+                orderBy, limit, onAuthStateChanged, signOut, writeBatch
+            });
+        }
+    </script>
+
+    <script src="js/common.js" defer></script>
+    <script src="js/admin.js" defer></script>
+</head>
+
+<body>
+    <div id="full-page-spinner" class="spinner-overlay">
+        <div class="spinner"></div>
+    </div>
+
+    <div id="app-error-overlay" class="error-overlay is-hidden">
+        <div class="error-box">
+            <h2>App initialization failed</h2>
+            <p id="app-error-message"></p>
+            <div>
+                <button id="app-error-reload" class="btn btn-success">Reload page</button>
+                <button id="app-error-console" class="btn btn-primary">Open console</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="app-content" class="is-hidden">
+        <header>
+            <div class="container">
+                <div class="header-content">
+                    <div class="logo">
+                        <i class="fas fa-church"></i>
+                        <h1>Catechism Admin Panel</h1>
+                    </div>
+
+                    <nav>
+                        <ul>
+                            <li><a href="#" class="active" data-tab="dashboard">Dashboard</a></li>
+                            <li><a href="#" data-tab="students">Students</a></li>
+                            <li><a href="#" data-tab="attendance">Attendance</a></li>
+                            <li><a href="#" data-tab="assessments">Assessments</a></li>
+                            <li><a href="#" data-tab="reports">Reports</a></li>
+                            <li><a href="#" data-tab="admin-panel" id="nav-admin-panel">Admin Tools</a></li>
+                        </ul>
+                    </nav>
+
+                    <div class="header-actions">
+                        <div class="theme-switch-wrapper">
+                            <label class="theme-switch" for="theme-toggle">
+                                <input type="checkbox" id="theme-toggle" />
+                                <div class="slider round">
+                                    <i class="fas fa-sun sun-icon"></i>
+                                    <i class="fas fa-moon moon-icon"></i>
+                                </div>
+                            </label>
+                        </div>
+                        <div class="profile-dropdown">
+                            <button id="profile-btn" class="profile-btn">
+                                <i class="fas fa-user-circle"></i>
+                            </button>
+                            <div id="profile-menu" class="profile-menu is-hidden">
+                                <div id="user-info-email" class="profile-info-item">...</div>
+                                <div id="user-info-role" class="profile-info-item">...</div>
+                                <hr>
+                                <button id="logout-btn" class="profile-menu-item">
+                                    <i class="fas fa-sign-out-alt"></i> Logout
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </header>
+
+        <div class="container">
+            <div class="main-content">
+
+                <div id="dashboard" class="tab-content active">
+                    <div class="card">
+                        <div class="card-header">
+                            <h2 class="card-title">Dashboard Overview</h2>
+                        </div>
+                        <div class="grid">
+                            <div class="card">
+                                <h3>Total Students</h3>
+                                <p class="stat-number" id="total-students">0</p>
+                            </div>
+                            <div class="card">
+                                <h3>Classes Held</h3>
+                                <p class="stat-number" id="classes-held">0</p>
+                            </div>
+                            <div class="card">
+                                <h3>Avg Attendance</h3>
+                                <p class="stat-number" id="avg-attendance">0%</p>
+                            </div>
+                            <div class="card">
+                                <h3>Upcoming Sessions</h3>
+                                <p class="stat-number" id="upcoming-sessions">0</p>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="card">
+                        <div class="card-header">
+                            <h2 class="card-title">Recent Activity</h2>
+                        </div>
+                        <div id="recent-activity">
+                            <p>Loading recent activity...</p>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="students" class="tab-content">
+                    <div class="card">
+                        <div class="card-header">
+                            <h2 class="card-title">Student Management</h2>
+                            <div>
+                                <button class="btn btn-primary" id="add-student-btn" data-modal="student-modal">
+                                    <i class="fas fa-plus"></i> Add Student
+                                </button>
+                                <button class="btn btn-outline" id="import-students-btn" data-modal="import-modal">
+                                    <i class="fas fa-file-import"></i> Import CSV
+                                </button>
+                            </div>
+                        </div>
+                        <div class="search-bar">
+                            <input type="text" id="student-search" placeholder="Search students...">
+                            <button class="btn btn-primary"><i class="fas fa-search"></i></button>
+                        </div>
+                        <div class="table-wrapper">
+                            <table id="students-table" class="data-table">
+                                <thead>
+                                    <tr>
+                                        <th>ID</th>
+                                        <th>Name</th>
+                                        <th>Guardian</th>
+                                        <th>Contact</th>
+                                        <th>Class</th>
+                                        <th>Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="attendance" class="tab-content">
+                    <div class="card">
+                        <div class="card-header">
+                            <h2 class="card-title">Attendance Management</h2>
+                            <button class="btn btn-primary" id="new-session-btn" data-modal="session-modal">
+                                <i class="fas fa-calendar-plus"></i> New Session
+                            </button>
+                        </div>
+                        <div class="tabs">
+                            <div class="tab active" data-tab-target="#session-list">Sessions</div>
+                            <div class="tab" data-tab-target="#take-attendance">Take Attendance</div>
+                            <div class="tab" data-tab-target="#generate-reports">Generate Reports</div>
+                        </div>
+                        <div id="session-list" class="tab-content active">
+                            <div class="table-wrapper">
+                                <table id="sessions-table" class="data-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Date</th>
+                                            <th>Status</th>
+                                            <th>Reason</th>
+                                            <th>Actions</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody></tbody>
+                                </table>
+                            </div>
+                        </div>
+                        <div id="take-attendance" class="tab-content">
+                            <div class="form-group">
+                                <label for="session-date">Select Session Date</label>
+                                <select id="session-date">
+                                    <option value="">-- Select a session --</option>
+                                </select>
+                            </div>
+                            <div id="attendance-form-container">
+                                <p>Please select a session to take attendance.</p>
+                            </div>
+                        </div>
+                        <div id="generate-reports" class="tab-content">
+                            <div class="report-section card">
+                                <div class="card-header">
+                                    <h4>Overall Attendance Report</h4>
+                                    <button class="btn btn-primary" id="generate-overall-report-btn">
+                                        <i class="fas fa-chart-pie"></i> Generate
+                                    </button>
+                                </div>
+                                <div id="overall-report-container" class="report-container"></div>
+                            </div>
+                            <div class="report-section card">
+                                <div class="card-header">
+                                    <h4>Day-wise Attendance Report</h4>
+                                    <button class="btn btn-primary" id="print-daywise-report-btn" class="is-hidden">
+                                        <i class="fas fa-print"></i> Print Report
+                                    </button>
+                                </div>
+                                <div class="form-group">
+                                    <label for="report-session-date">Select Session Date</label>
+                                    <select id="report-session-date">
+                                        <option value="">-- Select a session --</option>
+                                    </select>
+                                </div>
+                                <div id="daywise-report-container" class="report-container">
+                                    <p>Please select a session to view the report.</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="assessments" class="tab-content">
+                    <div class="card">
+                        <div class="card-header">
+                            <h2 class="card-title">Assessment Management</h2>
+                            <button class="btn btn-primary" id="new-assessment-btn" data-modal="assessment-modal">
+                                <i class="fas fa-plus-circle"></i> New Assessment
+                            </button>
+                        </div>
+                        <div class="table-wrapper">
+                            <table id="assessments-table" class="data-table">
+                                <thead>
+                                    <tr>
+                                        <th>Name</th>
+                                        <th>Date</th>
+                                        <th>Total Marks</th>
+                                        <th>Students Recorded</th>
+                                        <th>Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="reports" class="tab-content">
+                    <div class="card">
+                        <div class="card-header">
+                            <h2 class="card-title">Student Reports</h2>
+                        </div>
+                        <div class="form-group" id="report-class-filter-group">
+                            <label for="report-class-filter">Filter by Class</label>
+                            <select id="report-class-filter">
+                                <option value="">-- All Students --</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="report-student">Select Student</label>
+                            <select id="report-student">
+                                <option value="">-- Select a student --</option>
+                            </select>
+                        </div>
+                        <div id="report-content">
+                            <p>Select a student to generate a report</p>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="admin-panel" class="tab-content">
+                    <div class="card">
+                        <div class="card-header">
+                            <h2 class="card-title">Admin Tools</h2>
+                        </div>
+
+                        <div class="admin-section" id="admin-analytics-section">
+                            <h2>Admin Analytics</h2>
+                            <div class="card card-nested">
+                                <div class="card-header">
+                                    <h3 class="card-title">Faculty Performance Overview</h3>
+                                </div>
+                                <div class="table-wrapper">
+                                    <table id="faculty-performance-table" class="data-table">
+                                        <thead>
+                                            <tr>
+                                                <th>Faculty Email</th>
+                                                <th>Assigned Class</th>
+                                                <th>Student Count</th>
+                                                <th>Avg. Class Attendance</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody></tbody>
+                                    </table>
+                                </div>
+                            </div>
+                            <div class="card card-nested">
+                                <div class="card-header">
+                                    <h3 class="card-title">Advanced Reports</h3>
+                                </div>
+                                <div class="form-group">
+                                    <label for="analytics-class-filter">Select Class to Analyze</label>
+                                    <select id="analytics-class-filter">
+                                        <option value="">-- All Classes --</option>
+                                    </select>
+                                </div>
+                                <div class="grid">
+                                    <div class="chart-container">
+                                        <canvas id="class-attendance-chart"></canvas>
+                                    </div>
+                                    <div class="chart-container">
+                                        <canvas id="class-assessment-chart"></canvas>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="admin-section" id="admin-tools-section">
+                            <hr class="section-divider">
+                            <h2>Database Tools</h2>
+
+                            <div class="card card-nested">
+                                <div class="card-header">
+                                    <h3 class="card-title">Data Export & Backup</h3>
+                                </div>
+                                <div class="btn-group">
+                                    <button class="btn btn-success" id="export-students-csv">
+                                        <i class="fas fa-file-csv"></i> Export Students (CSV)
+                                    </button>
+                                    <button class="btn btn-success" id="export-attendance-csv">
+                                        <i class="fas fa-file-csv"></i> Export Attendance (CSV)
+                                    </button>
+                                    <button class="btn btn-primary" id="export-full-backup-json">
+                                        <i class="fas fa-download"></i> Full JSON Backup
+                                    </button>
+                                </div>
+                            </div>
+
+                            <div class="card card-nested">
+                                <div class="card-header">
+                                    <h3>Manage Classes</h3>
+                                </div>
+                                <form id="class-form">
+                                    <div class="grid">
+                                        <div class="form-group">
+                                            <label for="class-id-input">Class ID (e.g., class-6)</label>
+                                            <input type="text" id="class-id-input" placeholder="class-6" required>
+                                        </div>
+                                        <div class="form-group">
+                                            <label for="class-name-input">Display Name (e.g., Class 6)</label>
+                                            <input type="text" id="class-name-input" placeholder="Class 6" required>
+                                        </div>
+                                    </div>
+                                    <button type="submit" class="btn btn-primary">Save Class</button>
+                                </form>
+                                <div class="table-wrapper">
+                                    <table id="classes-table" class="data-table">
+                                        <thead>
+                                            <tr>
+                                                <th>ID</th>
+                                                <th>Name</th>
+                                                <th>Actions</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody></tbody>
+                                    </table>
+                                </div>
+                            </div>
+
+                            <div class="card card-nested">
+                                <div class="card-header">
+                                    <h3>Manage User Roles</h3>
+                                </div>
+                                <form id="user-role-form">
+                                    <div class="form-group">
+                                        <label for="user-uid-input">User UID</label>
+                                        <input type="text" id="user-uid-input"
+                                            placeholder="Paste UID from Firebase Auth" required>
+                                    </div>
+                                    <div class="grid">
+                                        <div class="form-group">
+                                            <label for="user-role-select">Role</label>
+                                            <select id="user-role-select" required>
+                                                <option value="faculty">Faculty</option>
+                                                <option value="admin">Admin</option>
+                                            </select>
+                                        </div>
+                                        <div class="form-group" id="faculty-class-group">
+                                            <label for="user-class-id-select">Assign to Class</label>
+                                            <select id="user-class-id-select">
+                                                <option value="">-- Select a class --</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                    <button type="submit" class="btn btn-primary">Save Role</button>
+                                </form>
+                            </div>
+
+                            <div class="card card-nested">
+                                <div class="card-header">
+                                    <h3>Student ID Migration Tool</h3>
+                                </div>
+                                <p><strong>Use with caution!</strong> This is for fixing a student ID that was changed.
+                                    This will find all attendance and score records linked to the "Old ID" and update
+                                    them to the "New ID".</p>
+                                <form id="student-id-migration-form" style="margin-top: 20px;">
+                                    <div class="grid">
+                                        <div class="form-group">
+                                            <label for="migration-old-id">Old Student ID (e.g., 101)</label>
+                                            <input type="text" id="migration-old-id" placeholder="101" required>
+                                        </div>
+                                        <div class="form-group">
+                                            <label for="migration-new-id">New Student ID (e.g., 601)</label>
+                                            <input type="text" id="migration-new-id" placeholder="601" required>
+                                        </div>
+                                    </div>
+                                    <button type="submit" class="btn btn-danger" id="run-student-id-migration-btn">
+                                        <i class="fas fa-exclamation-triangle"></i> Run ID Migration
+                                    </button>
+                                </form>
+                            </div>
+
+                            <div class="card card-nested">
+                                <div class="card-header">
+                                    <h3>Data Tools (One-Time Use)</h3>
+                                </div>
+                                <div id="migration-tool-section">
+                                    <p>Add 'classId' to all old documents.</p>
+                                    <div class="form-group">
+                                        <label for="migration-class-id">Class ID to assign</label>
+                                        <input type="text" id="migration-class-id" placeholder="e.g., class-6">
+                                    </div>
+                                    <button class="btn btn-danger" id="run-migration-btn">
+                                        <i class="fas fa-exclamation-triangle"></i> Run Backfill Migration
+                                    </button>
+                                </div>
+                                <hr class="section-divider">
+                                <div id="cleanup-tool-section">
+                                    <p>Remove old 'class' field from students.</p>
+                                    <button class="btn btn-warning" id="run-cleanup-btn">
+                                        <i class="fas fa-broom"></i> Run Field Cleanup
+                                    </button>
+                                </div>
+                                <hr class="section-divider">
+                                <div id="session-cleanup-tool">
+                                    <p>Remove 'classId' from sessions to make them global.</p>
+                                    <button class="btn btn-warning" id="run-session-cleanup-btn">
+                                        <i class="fas fa-broom"></i> Run Session Cleanup
+                                    </button>
+                                </div>
+                            </div>
+
+                            <hr class="section-divider">
+                            <div class="card-header">
+                                <h3 class="card-title">Bulk Import Attendance (Matrix)</h3>
+                            </div>
+                            <p>Upload a CSV where <strong>Columns are Dates</strong> and <strong>Rows are
+                                    Students</strong>. <br>
+                                <small>Format: Student ID, Name, 2025-01-01, 2025-01-08... (Values: P, A, L, E)</small>
+                            </p>
+
+                            <div class="form-group">
+                                <input type="file" id="bulk-att-file" accept=".csv">
+                            </div>
+
+                            <div id="bulk-att-preview"
+                                style="margin-bottom: 15px; max-height: 200px; overflow: auto; border: 1px solid #ddd; display: none; padding: 10px;">
+                            </div>
+
+                            <button class="btn btn-warning" id="import-bulk-att-btn" disabled>
+                                <i class="fas fa-upload"></i> Upload & Process Attendance
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="student-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="student-modal-title">Add Student</h3>
+                <button class="close-btn">&times;</button>
+            </div>
+            <div class="modal-body">
+                <form id="student-form">
+                    <input type="hidden" id="student-id">
+                    <div class="grid">
+                        <div class="form-group">
+                            <label for="student-first-name">First Name *</label>
+                            <input type="text" id="student-first-name" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="student-last-name">Last Name *</label>
+                            <input type="text" id="student-last-name" required>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label for="student-id-input">Student ID *</label>
+                        <input type="text" id="student-id-input" required>
+                    </div>
+                    <div class="grid">
+                        <div class="form-group">
+                            <label for="student-dob">Date of Birth</label>
+                            <input type="date" id="student-dob">
+                        </div>
+                        <div class="form-group" data-admin-only="true">
+                            <label for="student-class-id">Class *</label>
+                            <select id="student-class-id" required>
+                                <option value="">-- Select a class --</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label for="student-guardian">Guardian Name *</label>
+                        <input type="text" id="student-guardian" required>
+                    </div>
+                    <div class="grid">
+                        <div class="form-group">
+                            <label for="student-phone">Phone</label>
+                            <input type="tel" id="student-phone">
+                        </div>
+                        <div class="form-group">
+                            <label for="student-email">Email</label>
+                            <input type="email" id="student-email">
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label for="student-notes">Notes</label>
+                        <textarea id="student-notes" rows="3"></textarea>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-outline close-btn">Cancel</button>
+                <button class="btn btn-primary" id="save-student-btn">Save Student</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="session-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Create New Session</h3>
+                <button class="close-btn">&times;</button>
+            </div>
+            <div class="modal-body">
+                <form id="session-form">
+                    <div class="form-group">
+                        <label for="session-date-input">Session Date *</label>
+                        <input type="date" id="session-date-input" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="session-status">Session Status *</label>
+                        <select id="session-status" required>
+                            <option value="Available">Class Available</option>
+                            <option value="NoClass">No Class</option>
+                        </select>
+                    </div>
+                    <div class="form-group is-hidden" id="noclass-reason-group">
+                        <label for="noclass-reason">No Class Reason</label>
+                        <select id="noclass-reason">
+                            <option value="holiday">Holiday</option>
+                            <option value="first-week">First Week - No Class</option>
+                            <option value="canceled">Canceled</option>
+                            <option value="other">Other</option>
+                        </select>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-outline close-btn">Cancel</button>
+                <button class="btn btn-primary" id="save-session-btn">Create Session</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="assessment-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Create New Assessment</h3>
+                <button class="close-btn">&times;</button>
+            </div>
+            <div class="modal-body">
+                <form id="assessment-form">
+                    <div class="form-group">
+                        <label for="assessment-name">Assessment Name *</label>
+                        <input type="text" id="assessment-name" required>
+                    </div>
+                    <div class="grid">
+                        <div class="form-group">
+                            <label for="assessment-date">Date *</label>
+                            <input type="date" id="assessment-date" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="assessment-total-marks">Total Marks *</label>
+                            <input type="number" id="assessment-total-marks" min="1" required>
+                        </div>
+                    </div>
+                    <div class="form-group" data-admin-only="true">
+                        <label for="assessment-class-id">For Class</label>
+                        <select id="assessment-class-id" required>
+                            <option value="">-- Select a class --</option>
+                        </select>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-outline close-btn">Cancel</button>
+                <button class="btn btn-primary" id="save-assessment-btn">Create Assessment</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="scores-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Record Scores</h3>
+                <button class="close-btn">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div id="scores-form-container"></div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-outline close-btn">Cancel</button>
+                <button class="btn btn-primary" id="save-scores-btn">Save Scores</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="import-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Import Students from CSV</h3>
+                <button class="close-btn">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label for="csv-file">Upload CSV File</label>
+                    <input type="file" id="csv-file" accept=".csv">
+                </div>
+                <div id="preview-container">
+                    <p>Preview will appear here after selecting a file</p>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-outline close-btn">Cancel</button>
+                <button class="btn btn-success" id="import-csv-btn" disabled>Import Students</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="student-view-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Student Details</h3>
+                <button class="close-btn" id="close-view-modal">&times;</button>
+            </div>
+            <div class="modal-body" id="student-details-content"></div>
+        </div>
+    </div>
+</body>
+
+</html>

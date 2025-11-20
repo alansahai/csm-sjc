@@ -1,0 +1,7 @@
+{
+    "name": "catechism-manager",
+    "version": "1.0.0",
+    "scripts": {
+        "build": "node scripts/write-config.js"
+    }
+}
