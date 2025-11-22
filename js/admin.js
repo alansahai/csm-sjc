@@ -107,6 +107,7 @@ async function initializeApp(user, userData) {
         // Render analytics
         renderAdminAnalytics();
         renderClassesTable();
+        renderUserRolesTable();
     } catch (err) {
         console.error("Failed during admin data load:", err);
         showError("An error occurred loading admin tools: " + err.message);
@@ -244,6 +245,9 @@ function setupEventListeners() {
     if (bulkAttBtn) {
         bulkAttBtn.addEventListener('click', importBulkAttendance);
     }
+
+    // System Restore
+    document.getElementById('btn-restore-system')?.addEventListener('click', restoreSystemFromBackup);
 
     // --- ADMIN TOOL LISTENERS ---
     document.getElementById('class-form')?.addEventListener('submit', saveClass);
@@ -741,24 +745,41 @@ async function saveSession() {
 
 async function deleteSession(sessionId) {
     const session = DATA_MODELS.sessions.find(s => s.id === sessionId);
-    const result = await showConfirm(
-        'Delete Session?',
-        `Delete session for ${formatDate(session?.date)}? All attendance will be lost.`
-    );
-    if (result.isConfirmed) {
-        showSpinner();
-        try {
-            const { doc, deleteDoc } = window;
-            const docRef = doc(window.db, 'sessions', sessionId);
-            await deleteDoc(docRef);
-            // TODO: Batch delete all attendance docs for this session
-            createAuditLog('session_deleted', { sessionId: sessionId, date: session?.date });
-            showSuccess('Session deleted.');
-        } catch (err) {
-            showError('Failed to delete session: ' + err.message);
-        } finally {
-            hideSpinner();
-        }
+    if (!confirm(`Delete session for ${formatDate(session?.date)}? All attendance for this day will be deleted.`)) return;
+
+    showSpinner();
+    try {
+        const { doc, query, collection, where, getDocs, writeBatch } = window;
+        const db = window.db;
+        const batch = writeBatch(db);
+
+        // 1. Delete the Session Doc
+        const sessionRef = doc(db, 'sessions', sessionId);
+        batch.delete(sessionRef);
+
+        // 2. Find and Delete all related Attendance Docs
+        const q = query(collection(db, 'attendance'), where('sessionId', '==', sessionId));
+        const snapshot = await getDocs(q);
+        snapshot.forEach(doc => {
+            batch.delete(doc.ref);
+        });
+
+        // 3. Commit
+        await batch.commit();
+
+        // 4. Update Local State
+        DATA_MODELS.sessions = DATA_MODELS.sessions.filter(s => s.id !== sessionId);
+        DATA_MODELS.attendance = DATA_MODELS.attendance.filter(a => a.sessionId !== sessionId);
+
+        createAuditLog('session_deleted', { sessionId, date: session?.date, recordsDeleted: snapshot.size });
+        showSuccess('Session and related attendance deleted.');
+        renderSessionsTable();
+
+    } catch (err) {
+        console.error(err);
+        showError('Failed to delete session: ' + err.message);
+    } finally {
+        hideSpinner();
     }
 }
 
@@ -867,41 +888,58 @@ window.saveAttendance = async (sessionId) => {
 // -----------------
 // 📊 ASSESSMENT MANAGEMENT
 // -----------------
+// REPLACE your existing renderAssessmentsTable with this one:
 function renderAssessmentsTable() {
     const tbody = document.querySelector('#assessments-table tbody');
     if (!tbody) return;
 
-    const sortedAssessments = [...DATA_MODELS.assessments].sort((a, b) => new Date(b.date) - new Date(a.date));
     tbody.innerHTML = '';
-    if (sortedAssessments.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="5">No assessments created yet.</td></tr>';
-        return;
-    }
+
+    const sortedAssessments = [...DATA_MODELS.assessments].sort((a, b) =>
+        new Date(b.date) - new Date(a.date)
+    );
 
     sortedAssessments.forEach(assessment => {
-        const scores = DATA_MODELS.scores.filter(score => score.assessmentId === assessment.id);
-        const scoredStudents = scores.length;
-        const totalStudentsInClass = DATA_MODELS.students.filter(s => s.classId === assessment.classId).length;
+        const scoredStudents = DATA_MODELS.scores
+            .filter(score => score.assessmentId === assessment.id)
+            .length;
+
+        // Calculate total students for that class
+        // (Faculty logic handles this automatically via scoped DATA_MODELS)
+        const totalStudents = DATA_MODELS.students.filter(s => s.classId === assessment.classId).length;
 
         const row = document.createElement('tr');
         row.innerHTML = `
-            <td>${escapeHtml(assessment.name)} (${escapeHtml(assessment.classId || 'N/A')})</td>
+            <td>
+                ${escapeHtml(assessment.name)}
+                <small style="color:gray; display:block">(${escapeHtml(assessment.classId || 'N/A')})</small>
+            </td>
             <td>${formatDate(assessment.date)}</td>
             <td>${escapeHtml(assessment.totalMarks)}</td>
-            <td>${scoredStudents} of ${totalStudentsInClass}</td>
+            <td>${scoredStudents} / ${totalStudents}</td>
             <td>
-                <button class="btn btn-primary btn-sm record-scores" data-id="${escapeHtml(assessment.id)}">
-                    <i class="fas fa-edit"></i> Record Scores
-                </button>
-                <button class="btn btn-danger btn-sm delete-assessment" data-id="${escapeHtml(assessment.id)}">
-                    <i class="fas fa-trash"></i>
-                </button>
-            </td>`;
+                <div class="btn-group">
+                    <button class="btn btn-primary btn-sm record-scores" data-id="${escapeHtml(assessment.id)}" title="Record Scores">
+                        <i class="fas fa-edit"></i> Marks
+                    </button>
+                    <button class="btn btn-info btn-sm view-report" data-id="${escapeHtml(assessment.id)}" title="View Report">
+                        <i class="fas fa-chart-bar"></i> Report
+                    </button>
+                    <button class="btn btn-danger btn-sm delete-assessment" data-id="${escapeHtml(assessment.id)}" title="Delete">
+                        <i class="fas fa-trash"></i>
+                    </button>
+                </div>
+            </td>
+        `;
         tbody.appendChild(row);
     });
 
+    // Re-attach listeners
     tbody.querySelectorAll('.record-scores').forEach(btn => {
         btn.addEventListener('click', (e) => openScoresModal(e.currentTarget.dataset.id));
+    });
+    tbody.querySelectorAll('.view-report').forEach(btn => {
+        btn.addEventListener('click', (e) => viewAssessmentReport(e.currentTarget.dataset.id));
     });
     tbody.querySelectorAll('.delete-assessment').forEach(btn => {
         btn.addEventListener('click', (e) => deleteAssessment(e.currentTarget.dataset.id));
@@ -941,26 +979,41 @@ async function saveAssessment() {
 
 async function deleteAssessment(assessmentId) {
     const assessment = DATA_MODELS.assessments.find(a => a.id === assessmentId);
-    const result = await showConfirm(
-        'Delete Assessment?',
-        `Delete "${assessment?.name}"? All scores will be lost.`
-    );
-    if (result.isConfirmed) {
-        showSpinner();
-        try {
-            const { doc, deleteDoc } = window;
-            const docRef = doc(window.db, 'assessments', assessmentId);
-            await deleteDoc(docRef);
+    if (!confirm(`Delete "${assessment?.name}"? All student scores for this assessment will be deleted.`)) return;
 
-            // TODO: Delete all scores associated with this assessment (batched delete)
+    showSpinner();
+    try {
+        const { doc, query, collection, where, getDocs, writeBatch } = window;
+        const db = window.db;
+        const batch = writeBatch(db);
 
-            createAuditLog('assessment_deleted', { assessmentId: assessmentId, name: assessment?.name });
-            showSuccess('Assessment deleted.');
-        } catch (err) {
-            showError('Failed to delete assessment: ' + err.message);
-        } finally {
-            hideSpinner();
-        }
+        // 1. Delete the Assessment Doc
+        const assessRef = doc(db, 'assessments', assessmentId);
+        batch.delete(assessRef);
+
+        // 2. Find and Delete all related Score Docs
+        const q = query(collection(db, 'scores'), where('assessmentId', '==', assessmentId));
+        const snapshot = await getDocs(q);
+        snapshot.forEach(doc => {
+            batch.delete(doc.ref);
+        });
+
+        // 3. Commit
+        await batch.commit();
+
+        // 4. Update Local State
+        DATA_MODELS.assessments = DATA_MODELS.assessments.filter(a => a.id !== assessmentId);
+        DATA_MODELS.scores = DATA_MODELS.scores.filter(s => s.assessmentId !== assessmentId);
+
+        createAuditLog('assessment_deleted', { assessmentId, name: assessment?.name, recordsDeleted: snapshot.size });
+        showSuccess('Assessment and related scores deleted.');
+        renderAssessmentsTable();
+
+    } catch (err) {
+        console.error(err);
+        showError('Failed to delete assessment: ' + err.message);
+    } finally {
+        hideSpinner();
     }
 }
 
@@ -2373,6 +2426,324 @@ async function importBulkAttendance() {
     } finally {
         btn.disabled = false;
         btn.innerHTML = '<i class="fas fa-upload"></i> Upload & Process Attendance';
+        hideSpinner();
+    }
+}
+
+// Helper to switch back to the list view
+function closeAssessmentReport() {
+    document.getElementById('assessment-report-view').style.display = 'none';
+    document.getElementById('assessment-list-view').style.display = 'block';
+}
+// Make it global so the HTML button can see it
+window.closeAssessmentReport = closeAssessmentReport;
+
+
+// ---------------------------------------------------------
+// 📊 NEW ASSESSMENT REPORT LOGIC
+// ---------------------------------------------------------
+
+// 1. Switch Views
+function closeAssessmentReport() {
+    document.getElementById('assessment-report-view').style.display = 'none';
+    document.getElementById('assessment-list-view').style.display = 'block';
+}
+// Expose to window so the HTML "Back" button can call it
+window.closeAssessmentReport = closeAssessmentReport;
+
+// REPLACE 'viewAssessmentReport' in BOTH admin.js and faculty.js
+function viewAssessmentReport(assessmentId) {
+    console.log("Generating report for:", assessmentId);
+
+    const assessment = DATA_MODELS.assessments.find(a => a.id === assessmentId);
+    if (!assessment) return console.error("Assessment not found in data");
+
+    // 1. Get Elements
+    const listView = document.getElementById('assessment-list-view');
+    const reportView = document.getElementById('assessment-report-view');
+    const container = document.getElementById('assessment-report-container');
+
+    // Safety Check
+    if (!listView || !reportView || !container) {
+        alert("Error: Report containers missing in HTML. Did you update admin.html?");
+        return;
+    }
+
+    // 2. Switch Views
+    listView.style.display = 'none';
+    reportView.style.display = 'block';
+
+    // 3. Filter Data
+    const students = DATA_MODELS.students.filter(s => s.classId === assessment.classId)
+        .sort((a, b) => String(a.studentId).localeCompare(String(b.studentId), undefined, { numeric: true }));
+    const scores = DATA_MODELS.scores.filter(s => s.assessmentId === assessmentId);
+
+    // 4. Stats Logic
+    let totalScored = 0, sumMarks = 0, highest = 0, lowest = assessment.totalMarks;
+
+    const reportRows = students.map(student => {
+        const scoreRecord = scores.find(s => s.studentId === student.studentId);
+        const marks = scoreRecord && scoreRecord.marks !== null ? scoreRecord.marks : null;
+        let statusHtml = '<span style="color:orange">Absent</span>';
+
+        if (marks !== null) {
+            totalScored++;
+            sumMarks += marks;
+            if (marks > highest) highest = marks;
+            if (marks < lowest) lowest = marks;
+            const percentage = Math.round((marks / assessment.totalMarks) * 100);
+            const color = percentage >= 35 ? 'green' : 'red';
+            statusHtml = `<strong style="color:${color}">${percentage}%</strong>`;
+        }
+        return { student, marks, statusHtml };
+    });
+
+    if (totalScored === 0) lowest = 0;
+    const average = totalScored > 0 ? Math.round(sumMarks / totalScored) : 0;
+
+    // 5. Build HTML
+    container.innerHTML = `
+        <div class="report-header print-only">
+            <h3>${escapeHtml(assessment.name)}</h3>
+            <p>Date: ${formatDate(assessment.date)} | Total Marks: ${assessment.totalMarks}</p>
+        </div>
+        <div class="report-stats-grid" style="margin-bottom: 20px;">
+            <div class="report-stat-card"><h6>Average</h6><p>${average}</p></div>
+            <div class="report-stat-card"><h6>Highest</h6><p>${highest}</p></div>
+            <div class="report-stat-card"><h6>Lowest</h6><p>${lowest}</p></div>
+            <div class="report-stat-card"><h6>Count</h6><p>${totalScored} / ${students.length}</p></div>
+        </div>
+        <div class="text-right no-print" style="margin-bottom: 15px; display:flex; justify-content:flex-end; gap:10px;">
+            <button class="btn btn-success btn-sm" id="btn-export-assess-csv"><i class="fas fa-file-csv"></i> Export CSV</button>
+            <button class="btn btn-danger btn-sm" id="btn-export-assess-pdf"><i class="fas fa-file-pdf"></i> Export PDF</button>
+            <button class="btn btn-primary btn-sm" onclick="printReport('assessment-report-container', 'Assessment Report')"><i class="fas fa-print"></i> Print</button>
+        </div>
+        <table class="data-table">
+            <thead><tr><th>ID</th><th>Name</th><th>Marks</th><th>%</th></tr></thead>
+            <tbody>
+                ${reportRows.map(row => `
+                    <tr>
+                        <td>${escapeHtml(row.student.studentId)}</td>
+                        <td>${escapeHtml(row.student.firstName)} ${escapeHtml(row.student.lastName)}</td>
+                        <td>${row.marks !== null ? row.marks : '-'}</td>
+                        <td>${row.statusHtml}</td>
+                    </tr>`).join('')}
+            </tbody>
+        </table>
+    `;
+
+    // 6. Attach Listeners
+    setTimeout(() => {
+        document.getElementById('btn-export-assess-csv').onclick = () => exportAssessmentToCsv(assessmentId);
+        document.getElementById('btn-export-assess-pdf').onclick = () => {
+            const filename = `Report_${assessment.name.replace(/[^a-z0-9]/gi, '_')}.pdf`;
+            if (typeof downloadContainerAsPDF === 'function') {
+                downloadContainerAsPDF('assessment-report-container', filename);
+            } else {
+                alert("PDF function missing. Check common.js");
+            }
+        };
+    }, 50);
+}
+
+// 3. Export CSV
+function exportAssessmentToCsv(assessmentId) {
+    const assessment = DATA_MODELS.assessments.find(a => a.id === assessmentId);
+    if (!assessment) return;
+
+    const students = DATA_MODELS.students.filter(s => s.classId === assessment.classId)
+        .sort((a, b) => String(a.studentId).localeCompare(String(b.studentId), undefined, { numeric: true }));
+    const scores = DATA_MODELS.scores.filter(s => s.assessmentId === assessmentId);
+
+    let csv = `Assessment Report,"${assessment.name}"\n`;
+    csv += `Date,${formatDate(assessment.date)}\n`;
+    csv += `Total Marks,${assessment.totalMarks}\n\n`;
+    csv += `Student ID,Name,Marks,Percentage\n`;
+
+    students.forEach(student => {
+        const scoreRecord = scores.find(s => s.studentId === student.studentId);
+        const marks = scoreRecord && scoreRecord.marks !== null ? scoreRecord.marks : '';
+        let perc = '';
+        if (marks !== '') perc = Math.round((marks / assessment.totalMarks) * 100) + '%';
+
+        csv += `"${student.studentId}","${student.firstName} ${student.lastName}",${marks},${perc}\n`;
+    });
+
+    downloadCSV(csv, `Assessment_${assessment.name.replace(/\s/g, '_')}.csv`);
+}
+
+// Helper to switch back to the list view
+window.closeAssessmentReport = function () {
+    const reportView = document.getElementById('assessment-report-view');
+    const listView = document.getElementById('assessment-list-view');
+
+    if (reportView) reportView.style.display = 'none';
+    if (listView) listView.style.display = 'block';
+};
+
+// Helper to switch back to the list view
+window.closeAssessmentReport = function () {
+    const reportView = document.getElementById('assessment-report-view');
+    const listView = document.getElementById('assessment-list-view');
+
+    if (reportView) reportView.style.display = 'none';
+    if (listView) listView.style.display = 'block';
+};
+
+// ---------------------------------------------------------
+// ♻️ SYSTEM RESTORE (From JSON Backup)
+// ---------------------------------------------------------
+
+async function restoreSystemFromBackup() {
+    const fileInput = document.getElementById('restore-file');
+    const file = fileInput?.files[0];
+
+    if (!file) return alert("Please select a JSON backup file first.");
+
+    if (!confirm("CRITICAL WARNING: This will MERGE backup data into your database. \n\n- Existing IDs will be updated.\n- New IDs will be created.\n- Large datasets will be processed in chunks.\n\nAre you sure?")) return;
+
+    const reader = new FileReader();
+    reader.onload = async function (e) {
+        try {
+            const backup = JSON.parse(e.target.result);
+            showSpinner();
+
+            const { doc } = window;
+            const db = window.db;
+            let totalCount = 0;
+
+            // Generic helper to restore a specific collection
+            const restoreCollection = async (colName, items, idKey) => {
+                if (!items || items.length === 0) return;
+                console.log(`Restoring ${colName}...`);
+
+                await processBatchInChunks(items, (batch, item) => {
+                    // Determine ID: Explicit key, or 'id', or composite
+                    let docId = item[idKey] || item.id;
+                    if (colName === 'attendance' && !docId) docId = `${item.sessionId}_${item.studentId}`;
+                    if (colName === 'scores' && !docId) docId = `${item.assessmentId}_${item.studentId}`;
+
+                    if (docId) {
+                        const ref = doc(db, colName, String(docId));
+                        batch.set(ref, item, { merge: true });
+                    }
+                });
+                totalCount += items.length;
+            };
+
+            // Restore strictly in order
+            await restoreCollection('students', backup.students, 'studentId');
+            await restoreCollection('sessions', backup.sessions, 'id');
+            await restoreCollection('assessments', backup.assessments, 'id');
+            await restoreCollection('classes', backup.classes, 'id');
+            await restoreCollection('userRoles', backup.userRoles, 'uid');
+            // Restore large collections last
+            await restoreCollection('attendance', backup.attendance, 'id');
+            await restoreCollection('scores', backup.scores, 'id');
+
+            createAuditLog('system_restore', { ops: totalCount });
+            showSuccess("Restore Complete", `${totalCount} records processed. Reloading...`);
+            setTimeout(() => location.reload(), 2000);
+
+        } catch (err) {
+            console.error(err);
+            showError("Restore Failed: " + err.message);
+        } finally {
+            hideSpinner();
+        }
+    };
+    reader.readAsText(file);
+}
+
+/**
+ * 🛡️ SAFELY process a large number of Firestore writes in chunks.
+ * Prevents "Batch too large" errors (limit is 500).
+ * @param {Array} items - Array of data items to process
+ * @param {Function} callback - Function that takes (batch, item) and adds the op
+ */
+async function processBatchInChunks(items, callback) {
+    const BATCH_SIZE = 400; // Safety margin below 500
+    const { writeBatch } = window;
+    const db = window.db;
+
+    // Split into chunks
+    const chunks = [];
+    for (let i = 0; i < items.length; i += BATCH_SIZE) {
+        chunks.push(items.slice(i, i + BATCH_SIZE));
+    }
+
+    console.log(`[Batch] Processing ${items.length} items in ${chunks.length} chunks...`);
+
+    let totalOps = 0;
+
+    // Process sequentially to avoid network contention
+    for (const [index, chunk] of chunks.entries()) {
+        const batch = writeBatch(db);
+        chunk.forEach(item => callback(batch, item));
+        await batch.commit();
+        totalOps += chunk.length;
+        console.log(`[Batch] Committed chunk ${index + 1}/${chunks.length} (${totalOps} ops)`);
+    }
+
+    return totalOps;
+}
+
+// ---------------------------------------------------------
+// 👤 ROLE MANAGEMENT UI
+// ---------------------------------------------------------
+
+function renderUserRolesTable() {
+    const tbody = document.querySelector('#user-roles-table tbody');
+    if (!tbody) return; // Element might not exist yet in HTML
+
+    tbody.innerHTML = '';
+
+    // Filter valid roles
+    const roles = DATA_MODELS.userRoles || [];
+
+    if (roles.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="4">No roles found.</td></tr>';
+        return;
+    }
+
+    roles.forEach(user => {
+        const row = document.createElement('tr');
+        row.innerHTML = `
+            <td>${escapeHtml(user.email || 'No Email')}</td>
+            <td><span class="status-badge status-${user.role === 'admin' ? 'present' : 'late'}">${user.role.toUpperCase()}</span></td>
+            <td>${escapeHtml(user.classId || '-')}</td>
+            <td>
+                <button class="btn btn-danger btn-sm delete-role" data-uid="${user.uid}">
+                    <i class="fas fa-trash"></i> Revoke
+                </button>
+            </td>
+        `;
+        tbody.appendChild(row);
+    });
+
+    // Attach delete listeners
+    tbody.querySelectorAll('.delete-role').forEach(btn => {
+        btn.addEventListener('click', (e) => deleteUserRole(e.currentTarget.dataset.uid));
+    });
+}
+
+async function deleteUserRole(uid) {
+    if (!confirm("Are you sure? This user will lose access immediately.")) return;
+
+    showSpinner();
+    try {
+        const { doc, deleteDoc } = window;
+        await deleteDoc(doc(window.db, 'userRoles', uid));
+
+        createAuditLog('user_role_revoked', { uid });
+        showSuccess('Access Revoked');
+
+        // Refresh data
+        await loadAllDataForAdmin();
+        renderUserRolesTable();
+    } catch (err) {
+        showError('Failed to revoke role: ' + err.message);
+    } finally {
         hideSpinner();
     }
 }

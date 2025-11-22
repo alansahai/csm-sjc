@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Student Portal</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.9.3/html2pdf.bundle.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link rel="stylesheet" href="css/style.css">
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+
+    <script src="/firebase.config.js"></script>
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/12.5.0/firebase-app.js";
+        import { getFirestore, collection, getDocs, query, where, doc, getDoc, orderBy } from "https://www.gstatic.com/firebasejs/12.5.0/firebase-firestore.js";
+
+        const firebaseConfig = window.__FIREBASE_CONFIG__;
+        if (firebaseConfig) {
+            const app = initializeApp(firebaseConfig);
+            window.db = getFirestore(app);
+            // Expose needed functions
+            Object.assign(window, { collection, getDocs, query, where, doc, getDoc, orderBy });
+        }
+    </script>
+
+    <script src="js/common.js" defer></script>
+    <script src="js/student.js" defer></script>
+</head>
+
+<body>
+    <div id="full-page-spinner" class="spinner-overlay">
+        <div class="spinner"></div>
+    </div>
+
+    <div id="app-content" class="is-hidden">
+        <header>
+            <div class="container">
+                <div class="header-content">
+                    <div class="logo">
+                        <i class="fas fa-user-graduate"></i>
+                        <h1>Student Portal</h1>
+                    </div>
+                    <nav>
+                        <ul>
+                            <li><a href="#" class="active" data-tab="profile">My Profile</a></li>
+                            <li><a href="#" data-tab="attendance">Attendance</a></li>
+                            <li><a href="#" data-tab="results">Results</a></li>
+                        </ul>
+                    </nav>
+                    <div class="header-actions">
+                        <div class="theme-switch-wrapper">
+                            <label class="theme-switch" for="theme-toggle">
+                                <input type="checkbox" id="theme-toggle" />
+                                <div class="slider round">
+                                    <i class="fas fa-sun sun-icon"></i>
+                                    <i class="fas fa-moon moon-icon"></i>
+                                </div>
+                            </label>
+                        </div>
+                        <button id="student-logout-btn" class="btn btn-outline"
+                            style="color: var(--danger); border-color: var(--danger);">
+                            <i class="fas fa-sign-out-alt"></i> Logout
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </header>
+
+        <div class="container">
+            <div class="main-content">
+
+                <div id="profile" class="tab-content active">
+                    <div class="card">
+                        <div class="card-header">
+                            <h2 class="card-title">Student Information</h2>
+                        </div>
+                        <div class="grid">
+                            <div class="form-group">
+                                <label>Student Name</label>
+                                <div id="st-name" class="text-large font-bold">Loading...</div>
+                            </div>
+                            <div class="form-group">
+                                <label>Student ID</label>
+                                <div id="st-id">...</div>
+                            </div>
+                            <div class="form-group">
+                                <label>Class / Section</label>
+                                <div id="st-class">...</div>
+                            </div>
+                            <div class="form-group">
+                                <label>Date of Birth</label>
+                                <div id="st-dob">...</div>
+                            </div>
+                            <div class="form-group">
+                                <label>Guardian Name</label>
+                                <div id="st-guardian">...</div>
+                            </div>
+                            <div class="form-group">
+                                <label>Mobile Number</label>
+                                <div id="st-phone">...</div>
+                            </div>
+                        </div>
+                        <hr class="section-divider">
+                        <div class="card-header">
+                            <h3>Performance Overview</h3>
+                        </div>
+                        <div class="grid">
+                            <div class="card card-nested">
+                                <h6>Attendance %</h6>
+                                <p class="stat-number" id="st-att-percent">0%</p>
+                            </div>
+                            <div class="card card-nested">
+                                <h6>Assessments Taken</h6>
+                                <p class="stat-number" id="st-assess-count">0</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="attendance" class="tab-content">
+                    <div class="card">
+                        <div class="card-header">
+                            <h2 class="card-title">My Attendance</h2>
+                            <button class="btn btn-primary btn-sm"
+                                onclick="downloadContainerAsPDF('attendance-report-wrap', 'My_Attendance.pdf')">
+                                <i class="fas fa-download"></i> PDF
+                            </button>
+                        </div>
+
+                        <div id="attendance-report-wrap">
+                            <div class="chart-container" style="max-height: 200px;">
+                                <canvas id="attendance-chart"></canvas>
+                            </div>
+                            <br>
+                            <div class="table-wrapper">
+                                <table id="st-attendance-table" class="data-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Date</th>
+                                            <th>Status</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody></tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="results" class="tab-content">
+                    <div class="card">
+                        <div class="card-header">
+                            <h2 class="card-title">Assessment Scores</h2>
+                            <button class="btn btn-primary btn-sm"
+                                onclick="downloadContainerAsPDF('score-report-wrap', 'My_Scores.pdf')">
+                                <i class="fas fa-download"></i> PDF
+                            </button>
+                        </div>
+
+                        <div id="score-report-wrap">
+                            <div class="chart-container" style="max-height: 250px;">
+                                <canvas id="marks-chart"></canvas>
+                            </div>
+                            <br>
+                            <div class="table-wrapper">
+                                <table id="st-scores-table" class="data-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Assessment</th>
+                                            <th>Date</th>
+                                            <th>My Score</th>
+                                            <th>Total Marks</th>
+                                            <th>Percentage</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody></tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+    </div>
+</body>
+
+</html>

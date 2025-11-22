@@ -13,7 +13,7 @@
     <script src="/firebase.config.js"></script>
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/12.5.0/firebase-app.js";
-        import { getFirestore, doc, getDoc } from "https://www.gstatic.com/firebasejs/12.5.0/firebase-firestore.js";
+        import { getFirestore, doc, getDoc, collection, query, where, getDocs } from "https://www.gstatic.com/firebasejs/12.5.0/firebase-firestore.js";
         import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/12.5.0/firebase-auth.js";
 
         const firebaseConfig = window.__FIREBASE_CONFIG__;
@@ -22,18 +22,55 @@
             Swal.fire('Configuration Error', 'Firebase config is missing. The app cannot start.', 'error');
         } else {
             const app = initializeApp(firebaseConfig);
-            // Expose only what auth.js needs to the window
+            // Expose Firestore methods for Student Login lookup
             window.db = getFirestore(app);
             window.doc = doc;
             window.getDoc = getDoc;
+            window.collection = collection;
+            window.query = query;
+            window.where = where;
+            window.getDocs = getDocs;
+
+            // Auth methods
             window.auth = getAuth(app);
             window.signInWithEmailAndPassword = signInWithEmailAndPassword;
             window.onAuthStateChanged = onAuthStateChanged;
-            window.signOut = signOut; // Expose signout for auth.js
+            window.signOut = signOut;
         }
     </script>
 
     <script src="js/auth.js" defer></script>
+
+    <style>
+        /* Inline styles for the login toggle */
+        .login-toggle {
+            display: flex;
+            background: #eef2f7;
+            border-radius: 50px;
+            padding: 5px;
+            margin-bottom: 25px;
+            position: relative;
+        }
+
+        .toggle-btn {
+            flex: 1;
+            border: none;
+            background: transparent;
+            padding: 10px;
+            border-radius: 50px;
+            cursor: pointer;
+            font-weight: 600;
+            color: var(--text-color-light);
+            transition: all 0.3s ease;
+            z-index: 2;
+        }
+
+        .toggle-btn.active {
+            background: white;
+            color: var(--primary);
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+        }
+    </style>
 </head>
 
 <body>
@@ -45,6 +82,12 @@
         <div class="login-box">
             <i class="fas fa-church login-icon"></i>
             <h2>Catechism Manager</h2>
+
+            <div class="login-toggle">
+                <button type="button" class="toggle-btn active" id="btn-faculty-mode">Faculty Login</button>
+                <button type="button" class="toggle-btn" id="btn-student-mode">Student Login</button>
+            </div>
+
             <form id="login-form">
                 <div class="form-group">
                     <label for="login-email">Email</label>
@@ -60,9 +103,24 @@
                     </div>
                 </div>
                 <button type="submit" id="login-button" class="btn btn-primary btn-full-width">
-                    Login
+                    Faculty Login
                 </button>
             </form>
+
+            <form id="student-login-form" class="is-hidden">
+                <div class="form-group">
+                    <label for="student-identifier">Student ID or Mobile</label>
+                    <input type="text" id="student-identifier" placeholder="e.g. 101 or 9876543210" required>
+                </div>
+                <div class="form-group">
+                    <label for="student-dob-login">Date of Birth</label>
+                    <input type="date" id="student-dob-login" required>
+                </div>
+                <button type="submit" id="student-login-btn" class="btn btn-success btn-full-width">
+                    Student Login
+                </button>
+            </form>
+
         </div>
     </div>
 

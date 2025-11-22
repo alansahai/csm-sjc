@@ -233,19 +233,28 @@ function populateDropdown(selectId, data, valueKeyFn, textKeyFn) {
  * @param {string} action - A short code for the action (e.g., 'student_created').
  * @param {object} details - Any extra details to store (e.g., { studentId: '101' }).
  */
+/**
+ * 🛡️ Creates an audit log in Firestore using Server Timestamp.
+ */
 async function createAuditLog(action, details = {}) {
     if (!window.db || !window.addDoc || !window.collection) return;
 
     try {
-        const localUser = JSON.parse(localStorage.getItem('currentUser') || '{}');
+        const localUser = localStorage.getItem('currentUser');
+        const currentUser = JSON.parse(localUser || '{}');
+
         const logEntry = {
-            action,
-            details,
-            userEmail: localUser.email || 'unknown',
-            uid: localUser.uid || 'unknown',
-            timestamp: new Date() // Firestore server timestamp is better, but this is simpler
+            action: action,
+            details: details,
+            userEmail: currentUser.email || 'unknown',
+            uid: currentUser.uid || 'unknown',
+            // FIX: Use serverTimestamp() for accurate, tamper-proof time
+            timestamp: window.serverTimestamp ? window.serverTimestamp() : new Date()
         };
-        await window.addDoc(window.collection(window.db, 'activityLogs'), logEntry);
+
+        const logCollectionRef = window.collection(window.db, 'activityLogs');
+        await window.addDoc(logCollectionRef, logEntry);
+
     } catch (err) {
         console.warn('Failed to create audit log:', err);
     }
@@ -347,104 +356,124 @@ function renderAttendanceChart(studentId, DATA_MODELS) {
     });
 }
 
+// ---------------------------------------------------
+// 🖨️ PRINTING & PDF EXPORT (Fixes Truncation & OCR)
+// ---------------------------------------------------
+
 /**
- * Generates a PDF of the student report.
- * @param {string} studentId - The ID of the student.
- * @param {object} DATA_MODELS - The global data models object.
+ * Converts Chart.js canvases to Images.
+ * This fixes the "Graph cut off" and "Blank Graph" issues in Print/PDF.
+ * @returns {Function} A restore function to revert changes.
  */
-function downloadReportPDF(studentId, DATA_MODELS) {
-    const student = DATA_MODELS.students.find(s => s.studentId === studentId);
-    if (!student) return showError('Student not found');
-    const reportContainer = document.getElementById('report-content');
-    if (!reportContainer) return showError('Report not generated');
+function prepareChartsForPrint(containerId) {
+    const container = document.getElementById(containerId);
+    const originalCanvases = [];
 
-    let marksDataUrl = null, attendanceDataUrl = null;
-    try {
-        if (window.marksChart) marksDataUrl = window.marksChart.toBase64Image();
-    } catch (e) { console.warn("Could not get marks chart image", e); }
-    try {
-        if (window.attendanceChart) attendanceDataUrl = window.attendanceChart.toBase64Image();
-    } catch (e) { console.warn("Could not get attendance chart image", e); }
+    container.querySelectorAll('canvas').forEach(canvas => {
+        // Save original state
+        const parent = canvas.parentNode;
+        const nextSibling = canvas.nextSibling;
+        originalCanvases.push({ parent, canvas, nextSibling });
 
-    const clone = reportContainer.cloneNode(true);
-    clone.querySelectorAll('.no-print').forEach(n => n.remove());
-
-    const header = document.createElement('div');
-    header.innerHTML = `<div class="report-header print-only">
-            <h2>Student Report: ${escapeHtml(student.firstName)} ${escapeHtml(student.lastName)}</h2>
-            <p>Generated: ${new Date().toLocaleString()}</p>
-        </div>`;
-    clone.insertBefore(header, clone.firstChild);
-
-    function replaceCanvasWithImage(containerClone, selectorId, dataUrl) {
-        const canvasNode = containerClone.querySelector(`#${selectorId}`);
-        if (!canvasNode) return;
+        // Create Image from Canvas data
         const img = document.createElement('img');
+        img.src = canvas.toDataURL('image/png'); // High-quality PNG
         img.style.width = '100%';
+        img.style.height = 'auto';
         img.style.maxWidth = '100%';
-        if (dataUrl) img.src = dataUrl;
-        canvasNode.parentNode.replaceChild(img, canvasNode);
-    }
-    replaceCanvasWithImage(clone, 'marks-chart', marksDataUrl);
-    replaceCanvasWithImage(clone, 'attendance-chart', attendanceDataUrl);
+        img.className = 'chart-print-image'; // Marker class
 
-    const filename = `Report_${student.studentId}_${(new Date()).toISOString().slice(0, 10)}.pdf`;
-    const opt = {
-        margin: [10, 10, 10, 10], filename: filename,
-        image: { type: 'jpeg', quality: 0.98 },
-        html2canvas: { scale: 2 },
-        jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
+        // Remove canvas, insert Image
+        canvas.remove();
+        if (nextSibling) {
+            parent.insertBefore(img, nextSibling);
+        } else {
+            parent.appendChild(img);
+        }
+    });
+
+    // Return a function to undo this swap
+    return function restoreCharts() {
+        const images = container.querySelectorAll('.chart-print-image');
+        images.forEach((img, index) => {
+            const og = originalCanvases[index];
+            if (og) {
+                img.remove();
+                if (og.nextSibling) {
+                    og.parent.insertBefore(og.canvas, og.nextSibling);
+                } else {
+                    og.parent.appendChild(og.canvas);
+                }
+            }
+        });
     };
-    html2pdf().set(opt).from(clone).save();
 }
 
 /**
- * Helper function to print the content of a specific container.
- * @param {string} containerId - The ID of the element to print.
- * @param {string} reportTitle - The title to display on the printout.
+ * Robust Print Function.
+ * 1. Converts charts to images.
+ * 2. Uses CSS to hide everything except the report.
+ * 3. Triggers window.print().
  */
 function printReport(containerId, reportTitle) {
-    const reportContainer = document.getElementById(containerId);
-    if (!reportContainer) return;
+    const container = document.getElementById(containerId);
+    if (!container) return;
 
-    const printWindow = window.open('', '_blank', 'height=800,width=1000');
-    const stylesheets = Array.from(document.querySelectorAll('link[rel="stylesheet"]'))
-        .map(link => `<link rel="stylesheet" href="${link.href}">`)
-        .join('');
+    // 1. Swap Charts -> Images
+    const restoreCharts = prepareChartsForPrint(containerId);
 
-    const printStyles = `
-        <style>
-            body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; padding: 20px; color: #000; }
-            .no-print, .btn, .header-actions, .search-bar, [data-modal], header { display: none !important; }
-            .print-only { display: block !important; }
-            .report-header { text-align: center; margin-bottom: 20px; }
-            table.data-table, table { width: 100% !important; border-collapse: collapse; margin: 20px 0; page-break-inside: auto; }
-            tr { page-break-inside: avoid; page-break-after: auto; }
-            th, td { padding: 8px; border: 1px solid #ddd; text-align: left; }
-            th { background-color: #f5f7fa; }
-            .report-section { page-break-inside: avoid; }
-            .print-wrapper-daywise { page-break-inside: avoid !important; }
-            .report-stats-grid { display: grid !important; grid-template-columns: 1fr 1fr 1fr !important; gap: 15px !important; page-break-inside: avoid !important; }
-            .report-stat-card { border: 1px solid #ccc; padding: 15px; text-align: center; page-break-inside: avoid !important; }
-            .attendance-list-container { display: flex !important; flex-direction: row !important; width: 100% !important; gap: 20px !important; page-break-inside: avoid !important; }
-            .attendance-list { width: 50% !important; page-break-inside: avoid !important; }
-            .attendance-list ul { height: auto !important; max-height: none !important; overflow-y: visible !important; border: 1px solid #ccc !important; }
-            .card { border: 1px solid #ddd; box-shadow: none; }
-        </style>
-    `;
+    // 2. Add title temporarily if missing
+    let titleEl = null;
+    if (!container.querySelector('h2')) {
+        titleEl = document.createElement('div');
+        titleEl.innerHTML = `<h2 style="text-align:center; margin-bottom:10px;">${escapeHtml(reportTitle)}</h2>
+                             <p style="text-align:center; color:gray; margin-bottom:20px;">Generated: ${new Date().toLocaleString()}</p>`;
+        container.insertBefore(titleEl, container.firstChild);
+    }
 
-    printWindow.document.write(`<html><head><title>Print Report</title>${stylesheets}${printStyles}</head><body>`);
-    printWindow.document.write(`<h1>${escapeHtml(reportTitle)}</h1><p>Generated on: ${new Date().toLocaleString()}</p><hr>`);
-    printWindow.document.write(reportContainer.innerHTML);
-    printWindow.document.write('</body></html>');
-    printWindow.document.close();
+    // 3. Print
+    // We rely on the updated @media print CSS to hide the sidebar/buttons
+    // and show only this container.
+    window.print();
 
-    setTimeout(() => {
-        printWindow.print();
-        printWindow.close();
-    }, 500);
+    // 4. Cleanup (Restore interactivity)
+    if (titleEl) titleEl.remove();
+    restoreCharts();
 }
 
+/**
+ * "Export to PDF" using html2pdf.js.
+ * Note: This creates an IMAGE-based PDF (Non-OCR).
+ * For Selectable Text, use the "Print" button -> "Save as PDF".
+ */
+function downloadReportPDF(studentId) {
+    const student = DATA_MODELS.students.find(s => s.studentId === studentId);
+    if (!student) return alert('Student not found');
+
+    const element = document.getElementById('report-content');
+
+    // Swap charts to images to prevent cutting
+    const restoreCharts = prepareChartsForPrint('report-content');
+
+    // Options to handle page breaks better
+    const opt = {
+        margin: [10, 10, 10, 10], // Top, Right, Bottom, Left
+        filename: `Report_${student.studentId}.pdf`,
+        image: { type: 'jpeg', quality: 0.98 },
+        html2canvas: { scale: 2, useCORS: true, scrollY: 0 },
+        jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
+        // This prevents elements from being sliced in half
+        pagebreak: { mode: ['avoid-all', 'css', 'legacy'] }
+    };
+
+    // Generate
+    html2pdf().set(opt).from(element).save().then(() => {
+        restoreCharts(); // Restore after download
+    }).catch(err => {
+        console.error(err);
+        restoreCharts();
+    });
+}
 /**
  * Helper to trigger a browser download of CSV text.
  * @param {string} content - The CSV string content.
@@ -467,4 +496,62 @@ function downloadCSV(content, filename) {
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+}
+
+/**
+ * Generic function to download ANY container as a PDF.
+ * Uses html2pdf and handles chart safety.
+ */
+/**
+ * Generic function to download ANY container as a PDF.
+ * Uses html2pdf and handles chart safety.
+ */
+/**
+ * Generic function to download ANY container as a PDF.
+ */
+async function downloadContainerAsPDF(containerId, filename) {
+    const element = document.getElementById(containerId);
+    if (!element) return console.error('Container not found:', containerId);
+
+    // Ensure html2pdf is loaded
+    if (typeof html2pdf === 'undefined') {
+        return alert("Error: html2pdf library not found. Please check your script tags.");
+    }
+
+    // 1. Swap Charts -> Images (If any exist)
+    const restoreCharts = (typeof prepareChartsForPrint === 'function')
+        ? prepareChartsForPrint(containerId)
+        : () => { };
+
+    const opt = {
+        margin: [10, 10, 10, 10],
+        filename: filename,
+        image: { type: 'jpeg', quality: 0.98 },
+        html2canvas: { scale: 2, useCORS: true, logging: false },
+        jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
+        pagebreak: { mode: ['avoid-all', 'css', 'legacy'] }
+    };
+
+    // Visual feedback
+    let btn = null;
+    let originalText = "";
+    if (document.activeElement && document.activeElement.tagName === 'BUTTON') {
+        btn = document.activeElement;
+        originalText = btn.innerHTML;
+        btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Generating...';
+        btn.disabled = true;
+    }
+
+    try {
+        await html2pdf().set(opt).from(element).save();
+    } catch (err) {
+        console.error('PDF Generation Error:', err);
+        alert('Failed to generate PDF: ' + err.message);
+    } finally {
+        restoreCharts();
+        if (btn) {
+            btn.innerHTML = originalText;
+            btn.disabled = false;
+        }
+    }
 }

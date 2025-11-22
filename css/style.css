@@ -867,103 +867,99 @@ table.data-table.simple {
 
 @media print {
 
+    /* 1. Hide everything by default */
+    body * {
+        visibility: hidden;
+        height: auto;
+        /* Let content expand */
+        overflow: visible !important;
+    }
+
+    /* 2. Hide UI elements explicitly */
     .no-print,
     header,
     .btn,
     .header-actions,
     .search-bar,
-    [data-modal] {
+    [data-modal],
+    .modal,
+    .tabs {
         display: none !important;
     }
 
-    .print-only {
-        display: block;
+    /* 3. Show ONLY the specific report container being printed */
+    /* Added #assessment-report-container to the list */
+    #report-content,
+    #report-content *,
+    #daywise-report-container,
+    #daywise-report-container *,
+    #overall-report-container,
+    #overall-report-container *,
+    #assessment-report-container,
+    #assessment-report-container * {
+        visibility: visible;
     }
 
-    body {
+    /* 4. Position the visible content */
+    #report-content,
+    #daywise-report-container,
+    #overall-report-container,
+    #assessment-report-container {
+        /* <-- Add this ID here too */
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 100% !important;
+        margin: 0 !important;
+        padding: 0 !important;
         background: white;
-        padding: 0;
-        color: #000;
     }
 
-    .container {
-        max-width: 100%;
-        padding: 0;
+    /* 4. Position the visible content at the top-left of the paper */
+    #report-content,
+    #daywise-report-container,
+    #overall-report-container {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 100% !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        background: white;
     }
 
-    .card {
-        box-shadow: none;
-        border: 1px solid #ddd;
-    }
-
-    .report-header {
-        text-align: center;
+    /* 5. Page Break Logic */
+    .report-section,
+    .card,
+    .table-wrapper {
+        page-break-inside: avoid !important;
+        /* Don't split tables/sections in half */
         margin-bottom: 20px;
+        border: none !important;
+        /* Remove card borders for cleaner print */
+        box-shadow: none !important;
     }
 
-    table.data-table {
-        width: 100% !important;
-        border-collapse: collapse;
-        margin: 20px 0;
-        page-break-inside: auto;
-    }
-
-    tr {
-        page-break-inside: avoid;
-        page-break-after: auto;
-    }
-
-    th,
-    td {
-        padding: 8px;
-        border: 1px solid #ddd;
-        text-align: left;
-    }
-
-    th {
-        background-color: #f5f7fa;
-    }
-
-    .report-section {
-        page-break-inside: avoid;
-    }
-
-    .print-wrapper-daywise {
+    /* Force Charts to fit */
+    .chart-container {
         page-break-inside: avoid !important;
-    }
-
-    .report-stats-grid {
-        display: grid !important;
-        grid-template-columns: 1fr 1fr 1fr !important;
-        gap: 15px !important;
-        page-break-inside: avoid !important;
-    }
-
-    .report-stat-card {
-        border: 1px solid #ccc;
-        padding: 15px;
-        text-align: center;
-        page-break-inside: avoid !important;
-    }
-
-    .attendance-list-container {
-        display: flex !important;
-        flex-direction: row !important;
-        width: 100% !important;
-        gap: 20px !important;
-        page-break-inside: avoid !important;
-    }
-
-    .attendance-list {
-        width: 50% !important;
-        page-break-inside: avoid !important;
-    }
-
-    .attendance-list ul {
         height: auto !important;
-        max-height: none !important;
-        overflow-y: visible !important;
-        border: 1px solid #ccc !important;
+        /* Let height adjust */
+        min-height: 250px;
+        max-height: 400px;
+        width: 100% !important;
+        display: block !important;
+    }
+
+    canvas {
+        max-width: 100% !important;
+        height: auto !important;
+    }
+
+    /* Ensure text is black */
+    body {
+        color: black !important;
+        background: white !important;
     }
 }
 

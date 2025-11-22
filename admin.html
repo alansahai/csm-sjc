@@ -18,24 +18,24 @@
         import {
             getFirestore, collection, getDocs, query, where, addDoc,
             setDoc, doc, getDoc, deleteDoc, onSnapshot, updateDoc,
-            deleteField, orderBy, limit, writeBatch
+            deleteField, orderBy, limit, writeBatch, serverTimestamp // <--- ADDED THIS
         } from "https://www.gstatic.com/firebasejs/12.5.0/firebase-firestore.js";
         import { getAuth, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/12.5.0/firebase-auth.js";
 
         const firebaseConfig = window.__FIREBASE_CONFIG__;
         if (!firebaseConfig) {
-            console.error("Firebase config is missing!");
-            Swal.fire('Configuration Error', 'Firebase config is missing. The app cannot start.', 'error');
+            // ... error handling ...
         } else {
             const app = initializeApp(firebaseConfig);
             const db = getFirestore(app);
             const auth = getAuth(app);
 
-            // Expose all modules to the global window
+            // Expose to window
             Object.assign(window, {
                 db, auth, collection, getDocs, query, where, addDoc, setDoc,
                 doc, getDoc, deleteDoc, onSnapshot, updateDoc, deleteField,
-                orderBy, limit, onAuthStateChanged, signOut, writeBatch
+                orderBy, limit, onAuthStateChanged, signOut,
+                writeBatch, serverTimestamp // <--- ADDED THIS
             });
         }
     </script>
@@ -401,11 +401,13 @@
                                 <div class="card-header">
                                     <h3>Manage User Roles</h3>
                                 </div>
-                                <form id="user-role-form">
+
+                                <form id="user-role-form"
+                                    style="margin-bottom: 30px; border-bottom: 1px solid var(--border-color); padding-bottom: 20px;">
+                                    <h4>Assign New Role</h4>
                                     <div class="form-group">
-                                        <label for="user-uid-input">User UID</label>
-                                        <input type="text" id="user-uid-input"
-                                            placeholder="Paste UID from Firebase Auth" required>
+                                        <label for="user-uid-input">User UID (from Authentication tab)</label>
+                                        <input type="text" id="user-uid-input" placeholder="Paste UID here" required>
                                     </div>
                                     <div class="grid">
                                         <div class="form-group">
@@ -424,6 +426,22 @@
                                     </div>
                                     <button type="submit" class="btn btn-primary">Save Role</button>
                                 </form>
+
+                                <h4>Existing Accounts</h4>
+                                <div class="table-wrapper">
+                                    <table id="user-roles-table" class="data-table">
+                                        <thead>
+                                            <tr>
+                                                <th>Email</th>
+                                                <th>Role</th>
+                                                <th>Assigned Class</th>
+                                                <th>Action</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                        </tbody>
+                                    </table>
+                                </div>
                             </div>
 
                             <div class="card card-nested">
@@ -499,6 +517,24 @@
 
                             <button class="btn btn-warning" id="import-bulk-att-btn" disabled>
                                 <i class="fas fa-upload"></i> Upload & Process Attendance
+                            </button>
+                        </div>
+
+                        <div class="card card-nested" style="border-color: var(--danger);">
+                            <div class="card-header">
+                                <h3 class="card-title" style="color: var(--danger);">Danger Zone: System Restore</h3>
+                            </div>
+                            <p class="text-danger">
+                                <strong>Warning:</strong> This will overwrite data with the contents of a JSON backup
+                                file.
+                                Existing IDs found in the backup will be updated. New IDs will be created.
+                            </p>
+                            <div class="form-group">
+                                <label>Select Backup File (.json)</label>
+                                <input type="file" id="restore-file" accept=".json">
+                            </div>
+                            <button class="btn btn-danger" id="btn-restore-system">
+                                <i class="fas fa-trash-restore"></i> Restore from Backup
                             </button>
                         </div>
                     </div>
@@ -605,42 +641,44 @@
             </div>
         </div>
     </div>
+    <div id="assessments" class="tab-content">
 
-    <div id="assessment-modal" class="modal">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h3>Create New Assessment</h3>
-                <button class="close-btn">&times;</button>
+        <div id="assessment-list-view" class="card">
+            <div class="card-header">
+                <h2 class="card-title">Assessment Management</h2>
+                <button class="btn btn-primary" id="new-assessment-btn" data-modal="assessment-modal">
+                    <i class="fas fa-plus-circle"></i> New Assessment
+                </button>
             </div>
-            <div class="modal-body">
-                <form id="assessment-form">
-                    <div class="form-group">
-                        <label for="assessment-name">Assessment Name *</label>
-                        <input type="text" id="assessment-name" required>
-                    </div>
-                    <div class="grid">
-                        <div class="form-group">
-                            <label for="assessment-date">Date *</label>
-                            <input type="date" id="assessment-date" required>
-                        </div>
-                        <div class="form-group">
-                            <label for="assessment-total-marks">Total Marks *</label>
-                            <input type="number" id="assessment-total-marks" min="1" required>
-                        </div>
-                    </div>
-                    <div class="form-group" data-admin-only="true">
-                        <label for="assessment-class-id">For Class</label>
-                        <select id="assessment-class-id" required>
-                            <option value="">-- Select a class --</option>
-                        </select>
-                    </div>
-                </form>
-            </div>
-            <div class="modal-footer">
-                <button class="btn btn-outline close-btn">Cancel</button>
-                <button class="btn btn-primary" id="save-assessment-btn">Create Assessment</button>
+
+            <div class="table-wrapper">
+                <table id="assessments-table" class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Name</th>
+                            <th>Date</th>
+                            <th>Total Marks</th>
+                            <th>Students Recorded</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                    </tbody>
+                </table>
             </div>
         </div>
+
+        <div id="assessment-report-view" class="card" style="display: none;">
+            <div class="card-header">
+                <h2 class="card-title">Assessment Report</h2>
+                <button class="btn btn-outline" onclick="closeAssessmentReport()">
+                    <i class="fas fa-arrow-left"></i> Back to List
+                </button>
+            </div>
+
+            <div id="assessment-report-container"></div>
+        </div>
+
     </div>
 
     <div id="scores-modal" class="modal">

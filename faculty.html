@@ -264,7 +264,8 @@
                 </div>
 
                 <div id="assessments" class="tab-content">
-                    <div class="card">
+
+                    <div id="assessment-list-view" class="card">
                         <div class="card-header">
                             <h2 class="card-title">Assessment Management</h2>
                             <button class="btn btn-primary" id="new-assessment-btn" data-modal="assessment-modal"
@@ -289,6 +290,18 @@
                             </table>
                         </div>
                     </div>
+
+                    <div id="assessment-report-view" class="card" style="display: none;">
+                        <div class="card-header">
+                            <h2 class="card-title">Assessment Report</h2>
+                            <button class="btn btn-outline" onclick="closeAssessmentReport()">
+                                <i class="fas fa-arrow-left"></i> Back to List
+                            </button>
+                        </div>
+
+                        <div id="assessment-report-container"></div>
+                    </div>
+
                 </div>
 
                 <div id="reports" class="tab-content">

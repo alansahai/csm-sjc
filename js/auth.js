@@ -1,169 +1,200 @@
 /**
  * auth.js
- * Handles login, session restore, and redirection for the main index.html page.
+ * Handles login for Faculty (Firebase Auth) and Students (Firestore Lookup).
  */
 
 document.addEventListener('DOMContentLoaded', function () {
-    const loginForm = document.getElementById('login-form');
+    const loginForm = document.getElementById('login-form');       // Faculty
+    const studentForm = document.getElementById('student-login-form'); // Student
+
+    // Toggles
+    const btnFaculty = document.getElementById('btn-faculty-mode');
+    const btnStudent = document.getElementById('btn-student-mode');
+
+    // Faculty Inputs
     const loginButton = document.getElementById('login-button');
     const togglePassword = document.getElementById('toggle-password');
     const passwordInput = document.getElementById('login-password');
 
-    // Show spinner on load
+    // Student Inputs
+    const studentLoginBtn = document.getElementById('student-login-btn');
+
     showSpinner();
 
+    // --- TOGGLE LOGIC ---
+    if (btnFaculty && btnStudent) {
+        btnFaculty.addEventListener('click', () => {
+            btnFaculty.classList.add('active');
+            btnStudent.classList.remove('active');
+            loginForm.classList.remove('is-hidden');
+            studentForm.classList.add('is-hidden');
+            hideError();
+        });
+
+        btnStudent.addEventListener('click', () => {
+            btnStudent.classList.add('active');
+            btnFaculty.classList.remove('active');
+            studentForm.classList.remove('is-hidden');
+            loginForm.classList.add('is-hidden');
+            hideError();
+        });
+    }
+
+    // Password Eye Toggle
     if (togglePassword && passwordInput) {
         togglePassword.addEventListener('click', function () {
             const type = passwordInput.getAttribute('type') === 'password' ? 'text' : 'password';
             passwordInput.setAttribute('type', type);
             const icon = this.querySelector('i');
-            if (type === 'password') {
-                icon.classList.remove('fa-eye-slash');
-                icon.classList.add('fa-eye');
-            } else {
-                icon.classList.remove('fa-eye');
-                icon.classList.add('fa-eye-slash');
-            }
+            icon.classList.toggle('fa-eye');
+            icon.classList.toggle('fa-eye-slash');
         });
     }
 
-    // 1. Login Form Submit Handler
+    // --- 1. FACULTY LOGIN HANDLER ---
     if (loginForm) {
         loginForm.addEventListener('submit', async (e) => {
             e.preventDefault();
-            if (!window.auth || !window.signInWithEmailAndPassword) {
-                return showError('Auth service not ready. Please wait...');
-            }
+            if (!window.auth || !window.signInWithEmailAndPassword) return showError('Auth service not ready.');
 
             const email = document.getElementById('login-email').value.trim();
             const password = document.getElementById('login-password').value.trim();
 
             loginButton.disabled = true;
             loginButton.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Logging in...';
-            hideError(); // Hide previous errors
+            hideError();
 
             try {
                 const userCredential = await window.signInWithEmailAndPassword(window.auth, email, password);
                 const user = userCredential.user;
-
-                // User is authenticated, now check their role.
-                // This function (handleUserRole) will also perform the redirect.
                 await handleUserRole(user);
-
             } catch (error) {
                 console.error('Login error:', error.code, error.message);
-                let msg = 'An error occurred. Please try again.';
-                if (error.code === 'auth/invalid-credential' || error.code === 'auth/wrong-password' || error.code === 'auth/user-not-found') {
-                    msg = 'Invalid email or password.';
-                } else if (error.message.includes("no role found")) {
-                    msg = 'Login successful, but no role is assigned to this account.';
-                }
-                showError(msg); // Show error in UI
+                showError('Invalid email or password.');
             } finally {
                 loginButton.disabled = false;
-                loginButton.innerHTML = 'Login';
+                loginButton.innerHTML = 'Faculty Login';
             }
         });
     }
 
-    // 2. Session Restore Logic (using onAuthStateChanged)
+    // --- 2. STUDENT LOGIN HANDLER ---
+    if (studentForm) {
+        studentForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            const identifier = document.getElementById('student-identifier').value.trim();
+            const dob = document.getElementById('student-dob-login').value;
+
+            if (!identifier || !dob) return showError('Please fill in all fields.');
+
+            studentLoginBtn.disabled = true;
+            studentLoginBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Verifying...';
+            hideError();
+
+            try {
+                // 1. Try to find by Student ID (Doc ID)
+                let studentData = null;
+                const { doc, getDoc, collection, query, where, getDocs, db } = window;
+
+                // Check by ID first (assuming identifier is the doc ID)
+                const docRef = doc(db, 'students', identifier);
+                const docSnap = await getDoc(docRef);
+
+                if (docSnap.exists()) {
+                    studentData = docSnap.data();
+                } else {
+                    // 2. If not found by ID, try finding by Phone
+                    const q = query(collection(db, 'students'), where('phone', '==', identifier));
+                    const querySnap = await getDocs(q);
+                    if (!querySnap.empty) {
+                        studentData = querySnap.docs[0].data();
+                    }
+                }
+
+                // 3. Validate DOB
+                if (studentData) {
+                    if (studentData.dob === dob) {
+                        // SUCCESS: Store in Session Storage (Cleared on browser close)
+                        sessionStorage.setItem('currentStudent', JSON.stringify(studentData));
+                        window.location.href = 'student.html';
+                    } else {
+                        throw new Error('Date of Birth does not match our records.');
+                    }
+                } else {
+                    throw new Error('Student ID or Mobile Number not found.');
+                }
+
+            } catch (error) {
+                console.warn(error);
+                showError(error.message);
+            } finally {
+                studentLoginBtn.disabled = false;
+                studentLoginBtn.innerHTML = 'Student Login';
+            }
+        });
+    }
+
+    // --- 3. SESSION RESTORE (Faculty Only) ---
+    // Students use sessionStorage, so they don't auto-login via Firebase Auth state
     if (window.onAuthStateChanged) {
         window.onAuthStateChanged(window.auth, async (user) => {
             if (user) {
-                // User is signed in. Check role and redirect.
-                console.log('onAuthStateChanged: User is signed in, checking role...');
                 await handleUserRole(user);
             } else {
-                // User is signed out. Show the login screen.
-                console.log('onAuthStateChanged: User is signed out.');
                 hideSpinner();
                 document.getElementById('login-screen').style.opacity = '1';
             }
         });
     } else {
-        showError("Fatal Error: Auth service failed to load.");
         hideSpinner();
     }
 });
 
-/**
- * Fetches a user's role from Firestore and redirects them to the correct dashboard.
- * @param {object} user - The Firebase Auth user object.
- */
+// ... [Keep handleUserRole, getUserRole, showSpinner, hideSpinner, showError, hideError exactly as they were] ...
+// (Re-paste the helper functions from your original auth.js here if you are replacing the file completely)
+
 async function handleUserRole(user) {
     try {
         const userRoleDoc = await getUserRole(user.uid);
+        if (!userRoleDoc || !userRoleDoc.role) throw new Error("No role found.");
 
-        if (!userRoleDoc || !userRoleDoc.role) {
-            throw new Error("Login success, but no role found in Firestore for this user.");
-        }
-
-        // Create user data object to store
         const userData = {
             uid: user.uid,
             email: user.email,
             role: userRoleDoc.role,
             classId: userRoleDoc.classId || null
         };
-        // Store user data. This will be read by admin.js/faculty.js on the next page.
         localStorage.setItem('currentUser', JSON.stringify(userData));
 
-        // --- REDIRECTION LOGIC ---
-        if (userRoleDoc.role === 'admin') {
-            window.location.href = 'admin.html';
-        } else if (userRoleDoc.role === 'faculty') {
-            window.location.href = 'faculty.html';
-        } else {
-            // Student or other role
-            throw new Error(`Your role ("${userRoleDoc.role}") does not have access to this system.`);
-        }
+        if (userRoleDoc.role === 'admin') window.location.href = 'admin.html';
+        else if (userRoleDoc.role === 'faculty') window.location.href = 'faculty.html';
+        else throw new Error("Unauthorized role.");
 
     } catch (error) {
-        console.error("Role handling error:", error.message);
-        // If role check fails, sign the user out to prevent a loop
-        if (window.auth && window.signOut) {
-            await window.signOut(window.auth);
-        }
-        localStorage.removeItem('currentUser'); // Clean up partial login
-        showError(error.message); // Show error in UI
-        hideSpinner(); // Hide spinner so they can try again
+        if (window.auth && window.signOut) await window.signOut(window.auth);
+        localStorage.removeItem('currentUser');
+        showError(error.message);
+        hideSpinner();
     }
 }
 
-/**
- * Helper to fetch user role from Firestore
- * @param {string} uid - The user's UID.
- * @returns {object | null} The user role document or null.
- */
 async function getUserRole(uid) {
     if (!window.db || !window.doc || !window.getDoc) return null;
     try {
-        const roleDocRef = window.doc(window.db, 'userRoles', uid);
-        const docSnap = await window.getDoc(roleDocRef);
-        if (docSnap.exists()) {
-            return docSnap.data();
-        } else {
-            console.warn(`No role document found for UID: ${uid}`);
-            return null;
-        }
-    } catch (err) {
-        console.warn("Error fetching user role:", err.message);
-        return null;
-    }
+        const docSnap = await window.getDoc(window.doc(window.db, 'userRoles', uid));
+        return docSnap.exists() ? docSnap.data() : null;
+    } catch (err) { return null; }
 }
 
-// --- Spinner and Alert Helpers (Minimal versions for login page) ---
 function showSpinner() {
     const spinner = document.getElementById('full-page-spinner');
     if (spinner) spinner.classList.remove('is-hidden');
 }
-
 function hideSpinner() {
     const spinner = document.getElementById('full-page-spinner');
     if (spinner) spinner.classList.add('is-hidden');
 }
-
-// Create a dedicated error spot in the login form
 function showError(message) {
     let errorEl = document.getElementById('login-error');
     if (!errorEl) {
@@ -171,19 +202,14 @@ function showError(message) {
         errorEl.id = 'login-error';
         errorEl.style.color = 'var(--danger)';
         errorEl.style.marginTop = '15px';
-        document.getElementById('login-form').appendChild(errorEl);
+        const form = document.querySelector('form:not(.is-hidden)');
+        if (form) form.appendChild(errorEl);
+        else document.querySelector('.login-box').appendChild(errorEl);
     }
     errorEl.textContent = message;
     errorEl.style.display = 'block';
-
-    // Also use SweetAlert for consistency
-    Swal.fire({
-        icon: 'error',
-        title: 'Login Failed',
-        text: message,
-    });
+    Swal.fire({ icon: 'error', title: 'Login Failed', text: message });
 }
-
 function hideError() {
     const errorEl = document.getElementById('login-error');
     if (errorEl) errorEl.style.display = 'none';

@@ -867,41 +867,58 @@ window.saveAttendance = async (sessionId) => {
 // -----------------
 // 📊 ASSESSMENT MANAGEMENT
 // -----------------
+// REPLACE your existing renderAssessmentsTable with this one:
 function renderAssessmentsTable() {
     const tbody = document.querySelector('#assessments-table tbody');
     if (!tbody) return;
 
     tbody.innerHTML = '';
-    const sortedAssessments = [...DATA_MODELS.assessments].sort((a, b) => new Date(b.date) - new Date(a.date));
 
-    if (sortedAssessments.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="5">No assessments created yet.</td></tr>';
-        return;
-    }
+    const sortedAssessments = [...DATA_MODELS.assessments].sort((a, b) =>
+        new Date(b.date) - new Date(a.date)
+    );
 
     sortedAssessments.forEach(assessment => {
-        const scoredStudents = DATA_MODELS.scores.filter(score => score.assessmentId === assessment.id).length;
+        const scoredStudents = DATA_MODELS.scores
+            .filter(score => score.assessmentId === assessment.id)
+            .length;
+
+        // Calculate total students for that class
+        // (Faculty logic handles this automatically via scoped DATA_MODELS)
+        const totalStudents = DATA_MODELS.students.filter(s => s.classId === assessment.classId).length;
+
         const row = document.createElement('tr');
         row.innerHTML = `
-            <td>${escapeHtml(assessment.name)}</td>
+            <td>
+                ${escapeHtml(assessment.name)}
+                <small style="color:gray; display:block">(${escapeHtml(assessment.classId || 'N/A')})</small>
+            </td>
             <td>${formatDate(assessment.date)}</td>
             <td>${escapeHtml(assessment.totalMarks)}</td>
-            <td>${scoredStudents} of ${DATA_MODELS.students.length}</td>
+            <td>${scoredStudents} / ${totalStudents}</td>
             <td>
-                <button class="btn btn-primary btn-sm record-scores" data-id="${escapeHtml(assessment.id)}">
-                    <i class="fas fa-edit"></i> Record Scores
-                </button>
-                <button class="btn btn-danger btn-sm delete-assessment" data-id="${escapeHtml(assessment.id)}">
-                    <i class="fas fa-trash"></i>
-                </button>
+                <div class="btn-group">
+                    <button class="btn btn-primary btn-sm record-scores" data-id="${escapeHtml(assessment.id)}" title="Record Scores">
+                        <i class="fas fa-edit"></i> Marks
+                    </button>
+                    <button class="btn btn-info btn-sm view-report" data-id="${escapeHtml(assessment.id)}" title="View Report">
+                        <i class="fas fa-chart-bar"></i> Report
+                    </button>
+                    <button class="btn btn-danger btn-sm delete-assessment" data-id="${escapeHtml(assessment.id)}" title="Delete">
+                        <i class="fas fa-trash"></i>
+                    </button>
+                </div>
             </td>
         `;
         tbody.appendChild(row);
     });
 
-    // Add event listeners
+    // Re-attach listeners
     tbody.querySelectorAll('.record-scores').forEach(btn => {
         btn.addEventListener('click', (e) => openScoresModal(e.currentTarget.dataset.id));
+    });
+    tbody.querySelectorAll('.view-report').forEach(btn => {
+        btn.addEventListener('click', (e) => viewAssessmentReport(e.currentTarget.dataset.id));
     });
     tbody.querySelectorAll('.delete-assessment').forEach(btn => {
         btn.addEventListener('click', (e) => deleteAssessment(e.currentTarget.dataset.id));
@@ -1577,3 +1594,198 @@ function generateDaywiseAttendanceReport() {
     container.innerHTML = finalHtml;
     printBtn.style.display = 'block';
 }
+
+// Helper to switch back to the list view
+function closeAssessmentReport() {
+    document.getElementById('assessment-report-view').style.display = 'none';
+    document.getElementById('assessment-list-view').style.display = 'block';
+}
+// Make it global so the HTML button can see it
+window.closeAssessmentReport = closeAssessmentReport;
+
+// ---------------------------------------------------------
+// 📊 NEW ASSESSMENT REPORT LOGIC
+// ---------------------------------------------------------
+
+// 1. Switch Views
+function closeAssessmentReport() {
+    document.getElementById('assessment-report-view').style.display = 'none';
+    document.getElementById('assessment-list-view').style.display = 'block';
+}
+// Expose to window so the HTML "Back" button can call it
+window.closeAssessmentReport = closeAssessmentReport;
+
+// REPLACE 'viewAssessmentReport' in BOTH admin.js and faculty.js
+function viewAssessmentReport(assessmentId) {
+    console.log("Generating report for:", assessmentId);
+
+    const assessment = DATA_MODELS.assessments.find(a => a.id === assessmentId);
+    if (!assessment) return console.error("Assessment not found in data");
+
+    // 1. Get Elements
+    const listView = document.getElementById('assessment-list-view');
+    const reportView = document.getElementById('assessment-report-view');
+    const container = document.getElementById('assessment-report-container');
+
+    // Safety Check
+    if (!listView || !reportView || !container) {
+        alert("Error: Report containers missing in HTML. Please check console.");
+        console.error("Missing DOM Elements:", { listView, reportView, container });
+        return;
+    }
+
+    // 2. Switch Views
+    listView.style.display = 'none';
+    reportView.style.display = 'block';
+
+    // 3. Filter Data (Admin/Faculty agnostic logic)
+    // Faculty users already have a filtered DATA_MODELS.students, Admin has all.
+    // This filter works for both.
+    const students = DATA_MODELS.students.filter(s => s.classId === assessment.classId)
+        .sort((a, b) => String(a.studentId).localeCompare(String(b.studentId), undefined, { numeric: true }));
+
+    const scores = DATA_MODELS.scores.filter(s => s.assessmentId === assessmentId);
+
+    // 4. Calculate Stats
+    let totalScored = 0;
+    let sumMarks = 0;
+    let highest = 0;
+    let lowest = assessment.totalMarks;
+
+    const reportRows = students.map(student => {
+        const scoreRecord = scores.find(s => s.studentId === student.studentId);
+        const marks = scoreRecord && scoreRecord.marks !== null ? scoreRecord.marks : null;
+
+        let percentage = 0;
+        let statusHtml = '<span style="color:orange">Absent</span>';
+
+        if (marks !== null) {
+            totalScored++;
+            sumMarks += marks;
+            if (marks > highest) highest = marks;
+            if (marks < lowest) lowest = marks;
+
+            percentage = Math.round((marks / assessment.totalMarks) * 100);
+            const color = percentage >= 35 ? 'green' : 'red';
+            statusHtml = `<strong style="color:${color}">${percentage}%</strong>`;
+        }
+
+        return { student, marks, statusHtml };
+    });
+
+    if (totalScored === 0) lowest = 0;
+    const average = totalScored > 0 ? Math.round(sumMarks / totalScored) : 0;
+
+    // 5. Build HTML
+    let html = `
+        <div class="report-header print-only">
+            <h3>${escapeHtml(assessment.name)}</h3>
+            <p>Date: ${formatDate(assessment.date)} | Total Marks: ${assessment.totalMarks}</p>
+        </div>
+
+        <div class="report-stats-grid" style="margin-bottom: 20px;">
+            <div class="report-stat-card"><h6>Average</h6><p>${average}</p></div>
+            <div class="report-stat-card"><h6>Highest</h6><p>${highest}</p></div>
+            <div class="report-stat-card"><h6>Lowest</h6><p>${lowest}</p></div>
+            <div class="report-stat-card"><h6>Count</h6><p>${totalScored} / ${students.length}</p></div>
+        </div>
+
+        <div class="text-right no-print" style="margin-bottom: 15px; display:flex; justify-content:flex-end; gap:10px;">
+            <button class="btn btn-success btn-sm" id="btn-export-assess-csv">
+                <i class="fas fa-file-csv"></i> Export CSV
+            </button>
+            <button class="btn btn-danger btn-sm" id="btn-export-assess-pdf">
+                <i class="fas fa-file-pdf"></i> Export PDF
+            </button>
+            <button class="btn btn-primary btn-sm" onclick="printReport('assessment-report-container', 'Assessment Report')">
+                <i class="fas fa-print"></i> Print
+            </button>
+        </div>
+
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Name</th>
+                    <th>Marks</th>
+                    <th>%</th>
+                </tr>
+            </thead>
+            <tbody>
+    `;
+
+    reportRows.forEach(row => {
+        html += `<tr>
+            <td>${escapeHtml(row.student.studentId)}</td>
+            <td>${escapeHtml(row.student.firstName)} ${escapeHtml(row.student.lastName)}</td>
+            <td>${row.marks !== null ? row.marks : '-'}</td>
+            <td>${row.statusHtml}</td>
+        </tr>`;
+    });
+
+    html += `</tbody></table>`;
+
+    // 6. Inject HTML
+    container.innerHTML = html;
+
+    // 7. Attach Listeners (Wrapped in Timeout to ensure DOM readiness)
+    setTimeout(() => {
+        const btnCsv = document.getElementById('btn-export-assess-csv');
+        const btnPdf = document.getElementById('btn-export-assess-pdf');
+
+        if (btnCsv) {
+            btnCsv.onclick = () => exportAssessmentToCsv(assessmentId);
+        } else {
+            console.warn("CSV Button failed to render");
+        }
+
+        if (btnPdf) {
+            btnPdf.onclick = () => {
+                const filename = `Report_${assessment.name.replace(/[^a-z0-9]/gi, '_')}.pdf`;
+                // Check if common.js function exists
+                if (typeof downloadContainerAsPDF === 'function') {
+                    downloadContainerAsPDF('assessment-report-container', filename);
+                } else {
+                    alert("PDF function missing. Check common.js");
+                }
+            };
+        } else {
+            console.warn("PDF Button failed to render");
+        }
+    }, 50);
+}
+
+// 3. Export CSV
+function exportAssessmentToCsv(assessmentId) {
+    const assessment = DATA_MODELS.assessments.find(a => a.id === assessmentId);
+    if (!assessment) return;
+
+    const students = DATA_MODELS.students.filter(s => s.classId === assessment.classId)
+        .sort((a, b) => String(a.studentId).localeCompare(String(b.studentId), undefined, { numeric: true }));
+    const scores = DATA_MODELS.scores.filter(s => s.assessmentId === assessmentId);
+
+    let csv = `Assessment Report,"${assessment.name}"\n`;
+    csv += `Date,${formatDate(assessment.date)}\n`;
+    csv += `Total Marks,${assessment.totalMarks}\n\n`;
+    csv += `Student ID,Name,Marks,Percentage\n`;
+
+    students.forEach(student => {
+        const scoreRecord = scores.find(s => s.studentId === student.studentId);
+        const marks = scoreRecord && scoreRecord.marks !== null ? scoreRecord.marks : '';
+        let perc = '';
+        if (marks !== '') perc = Math.round((marks / assessment.totalMarks) * 100) + '%';
+
+        csv += `"${student.studentId}","${student.firstName} ${student.lastName}",${marks},${perc}\n`;
+    });
+
+    downloadCSV(csv, `Assessment_${assessment.name.replace(/\s/g, '_')}.csv`);
+}
+
+// Helper to switch back to the list view
+window.closeAssessmentReport = function () {
+    const reportView = document.getElementById('assessment-report-view');
+    const listView = document.getElementById('assessment-list-view');
+
+    if (reportView) reportView.style.display = 'none';
+    if (listView) listView.style.display = 'block';
+};
