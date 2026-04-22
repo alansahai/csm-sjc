@@ -1,0 +1,110 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ─── Helper functions ───────────────────────────────────────────────────
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function getUserRole() {
+      return get(/databases/$(database)/documents/userRoles/$(request.auth.uid)).data;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && getUserRole().role == 'admin';
+    }
+
+    function isFaculty() {
+      return isAuthenticated() && getUserRole().role == 'faculty';
+    }
+
+    function getFacultyClassId() {
+      return getUserRole().classId;
+    }
+
+    // ─── Students ────────────────────────────────────────────────────────────
+    match /students/{studentId} {
+      allow read: if isAdmin()
+                  || (isFaculty() && resource.data.classId == getFacultyClassId());
+      allow write: if isAdmin();
+    }
+
+    // ─── Sessions (global, admin-managed) ───────────────────────────────────
+    match /sessions/{sessionId} {
+      allow read: if isAdmin() || isFaculty();
+      allow write: if isAdmin();
+    }
+
+    // ─── Attendance ──────────────────────────────────────────────────────────
+    match /attendance/{attId} {
+      allow read: if isAdmin()
+                  || (isFaculty() && resource.data.classId == getFacultyClassId());
+      allow write: if isAdmin()
+                   || (isFaculty() && request.resource.data.classId == getFacultyClassId());
+    }
+
+    // ─── Assessments (admin-managed) ─────────────────────────────────────────
+    match /assessments/{assessmentId} {
+      allow read: if isAdmin()
+                  || (isFaculty() && resource.data.classId == getFacultyClassId());
+      allow write: if isAdmin();
+    }
+
+    // ─── Scores (faculty can write for their class) ───────────────────────────
+    match /scores/{scoreId} {
+      allow read: if isAdmin()
+                  || (isFaculty() && resource.data.classId == getFacultyClassId());
+      allow write: if isAdmin()
+                   || (isFaculty() && request.resource.data.classId == getFacultyClassId());
+    }
+
+    // ─── Classes ─────────────────────────────────────────────────────────────
+    match /classes/{classId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    // ─── User Roles ──────────────────────────────────────────────────────────
+    match /userRoles/{uid} {
+      allow read: if isAdmin() || (isAuthenticated() && request.auth.uid == uid);
+      allow write: if isAdmin();
+    }
+
+    // ─── Activity Logs ────────────────────────────────────────────────────────
+    match /activityLogs/{logId} {
+      allow read: if isAdmin();
+      allow create: if isAuthenticated();
+    }
+
+    // ─── App Settings ─────────────────────────────────────────────────────────
+    match /settings/{settingId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    // ─── VBS Sessions (admin-managed; year-scoped) ────────────────────────────
+    // Faculty can read all VBS sessions to navigate/select them.
+    // Only admin may create, update, or delete VBS sessions.
+    match /vbsSessions/{sessionId} {
+      allow read: if isAdmin() || isFaculty();
+      allow create, update: if isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // ─── VBS Attendance (class-wise faculty write access) ─────────────────────
+    // Faculty may only read/write records that carry their own classId.
+    // Admin has full access.
+    match /vbsAttendance/{attId} {
+      allow read: if isAdmin()
+                  || (isFaculty() && resource.data.classId == getFacultyClassId());
+      allow write: if isAdmin()
+                   || (isFaculty() && request.resource.data.classId == getFacultyClassId());
+      allow delete: if isAdmin();
+    }
+
+    // ─── Faculty Year Assignments (stored per-year inside userRoles) ──────────
+    // Managed through the userRoles document via admin writes; no separate collection needed.
+  }
+}
