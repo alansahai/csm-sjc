@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Early Angel Portal</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="css/style.css?v=20260419b">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.9.3/html2pdf.bundle.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+
+    <script src="/firebase.config.js"></script>
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/12.5.0/firebase-app.js";
+        import {
+            getFirestore, collection, getDocs, query, where,
+            setDoc, doc, getDoc, deleteDoc, onSnapshot
+        } from "https://www.gstatic.com/firebasejs/12.5.0/firebase-firestore.js";
+        import { getAuth, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/12.5.0/firebase-auth.js";
+
+        const firebaseConfig = window.__FIREBASE_CONFIG__;
+        if (!firebaseConfig) {
+            console.error("Firebase config is missing!");
+            Swal.fire('Configuration Error', 'Firebase config is missing. The app cannot start.', 'error');
+        } else {
+            const app = initializeApp(firebaseConfig);
+            const db = getFirestore(app);
+            const auth = getAuth(app);
+
+            Object.assign(window, {
+                db, auth, collection, getDocs, query, where, setDoc,
+                doc, getDoc, deleteDoc, onSnapshot, onAuthStateChanged, signOut
+            });
+        }
+    </script>
+
+    <script src="js/common.js?v=20260419b" defer></script>
+    <script src="js/early-angel.js?v=20260419b" defer></script>
+</head>
+
+<body>
+    <div id="full-page-spinner" class="spinner-overlay">
+        <div class="spinner"></div>
+    </div>
+
+    <div id="app-error-overlay" class="error-overlay is-hidden">
+        <div class="error-box">
+            <h2>App initialization failed</h2>
+            <p id="app-error-message"></p>
+            <div>
+                <button id="app-error-reload" class="btn btn-success">Reload page</button>
+                <button id="app-error-console" class="btn btn-primary">Open console</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="app-content" class="is-hidden">
+        <header>
+            <div class="container">
+                <div class="header-content">
+                    <div class="logo">
+                        <i class="fas fa-star"></i>
+                        <h1>Early Angel Portal</h1>
+                    </div>
+
+                    <div class="header-actions">
+                        <button id="ea-back-btn" class="btn btn-outline" type="button">
+                            <i class="fas fa-arrow-left"></i> Back To Main Portal
+                        </button>
+                        <div class="theme-switch-wrapper">
+                            <label class="theme-switch" for="theme-toggle">
+                                <input type="checkbox" id="theme-toggle" />
+                                <div class="slider round">
+                                    <i class="fas fa-sun sun-icon"></i>
+                                    <i class="fas fa-moon moon-icon"></i>
+                                </div>
+                            </label>
+                        </div>
+                        <div class="profile-dropdown">
+                            <button id="profile-btn" class="profile-btn">
+                                <i class="fas fa-user-circle"></i>
+                            </button>
+                            <div id="profile-menu" class="profile-menu is-hidden">
+                                <div id="user-info-email" class="profile-info-item">...</div>
+                                <div id="user-info-role" class="profile-info-item">...</div>
+                                <hr>
+                                <button id="logout-btn" class="profile-menu-item">
+                                    <i class="fas fa-sign-out-alt"></i> Logout
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </header>
+
+        <div class="container">
+            <div class="card">
+                <div class="card-header">
+                    <h2 class="card-title">Daily Entry</h2>
+                </div>
+
+                <form id="ea-entry-form">
+                    <div class="form-group ea-search-wrap">
+                        <label for="ea-student-search-input">Student Name Search *</label>
+                        <input type="text" id="ea-student-search-input" placeholder="Type student name or ID..."
+                            autocomplete="off" required>
+                        <input type="hidden" id="ea-selected-student-id">
+                        <div id="ea-student-suggestions" class="ea-suggestions is-hidden"></div>
+                        <small id="ea-student-mode-hint">Global search: type to fetch student name and class
+                            suggestions.</small>
+                    </div>
+
+                    <div class="grid">
+                        <div class="form-group">
+                            <label for="ea-class-input">Class *</label>
+                            <input type="text" id="ea-class-input" list="ea-class-list" placeholder="class-6" required>
+                            <datalist id="ea-class-list"></datalist>
+                        </div>
+                        <div class="form-group">
+                            <label for="ea-date-input">Date</label>
+                            <input type="date" id="ea-date-input" required>
+                        </div>
+                    </div>
+
+                    <div class="btn-group" style="margin-bottom: 20px;">
+                        <button class="btn btn-primary" type="submit">
+                            <i class="fas fa-plus"></i> Save Early Angel Entry
+                        </button>
+                    </div>
+                </form>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <h2 class="card-title">Daily Count And Recent Entries</h2>
+                </div>
+
+                <div class="form-group">
+                    <label for="ea-table-search">Search Leaderboard/Entries</label>
+                    <input type="text" id="ea-table-search" placeholder="Search by student, class, or date">
+                </div>
+
+                <div class="card card-nested">
+                    <div class="card-header">
+                        <h3 class="card-title">Leaderboard</h3>
+                    </div>
+                    <div class="table-wrapper">
+                        <table id="ea-leaderboard-table" class="data-table simple">
+                            <thead>
+                                <tr>
+                                    <th>Rank</th>
+                                    <th>Class</th>
+                                    <th>Student</th>
+                                    <th>Count</th>
+                                </tr>
+                            </thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="card card-nested">
+                    <div class="card-header">
+                        <h3 class="card-title">Recent Entries</h3>
+                    </div>
+                    <div class="table-wrapper">
+                        <table id="ea-entries-table" class="data-table simple">
+                            <thead>
+                                <tr>
+                                    <th>Date</th>
+                                    <th>Time</th>
+                                    <th>Class</th>
+                                    <th>Student</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card ea-report-engine-card">
+                <div class="card-header">
+                    <h2 class="card-title">Report Generation Engine</h2>
+                </div>
+
+                <div class="grid">
+                    <div class="form-group">
+                        <label for="ea-instant-report-date-select">Instant Report Date *</label>
+                        <select id="ea-instant-report-date-select">
+                            <option value="">Loading available dates...</option>
+                        </select>
+                        <small id="ea-report-date-note">Default is current date. Only dates with entries are
+                            listed.</small>
+                    </div>
+
+                    <div class="form-group">
+                        <label>Available Entry Dates</label>
+                        <div id="ea-report-date-meta" class="ea-pill-row"></div>
+                    </div>
+                </div>
+
+                <div class="btn-group">
+                    <button class="btn btn-primary" type="button" id="ea-generate-instant-report-btn">
+                        <i class="fas fa-file-download"></i> Download Instant Report
+                    </button>
+                    <button class="btn btn-success" type="button" id="ea-generate-entire-report-btn">
+                        <i class="fas fa-file-archive"></i> Download Entire Report
+                    </button>
+                </div>
+            </div>
+
+            <div id="ea-report-render-area" class="ea-report-render-host"></div>
+        </div>
+    </div>
+</body>
+
+</html>

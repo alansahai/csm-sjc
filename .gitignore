@@ -1,2 +1,16 @@
 firebase.config.js
 .env
+
+# Local editor/workspace settings
+.vscode/
+.idea/
+
+# Local logs and debug artifacts
+*.log
+*.tmp
+*.temp
+
+# Generated planning / scratch docs
+IMPLEMENTATION_SUMMARY.md
+NEW_IMPLEMENTATION_PLAN.txt
+TODO.md

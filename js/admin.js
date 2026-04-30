@@ -7,7 +7,7 @@
 
 // Show a nice overlay for uncaught errors
 window.addEventListener('error', (ev) => handleAppError(ev.message, ev.filename, ev.lineno));
-window.addEventListener('unhandledrejection', (ev) => handleAppError(ev.reason.message || JSON.stringify(ev.reason)));
+window.addEventListener('unhandledrejection', (ev) => handleAppError(ev.reason?.message || JSON.stringify(ev.reason || 'Unknown error')));
 
 function handleAppError(message, filename = '', lineno = '') {
     try {
@@ -26,11 +26,15 @@ function handleAppError(message, filename = '', lineno = '') {
 const DATA_MODELS = {
     students: [],
     sessions: [],
-    attendance: [],
     assessments: [],
+    attendance: [],
     scores: [],
-    userRoles: [],
-    classes: []
+    earlyAngelEntries: [],
+    earlyAngelLeaderboard: [],
+    enrollments: [],
+    classYearCounters: [],
+    facultyClassAssignments: [],
+    appConfig: { activeAcademicYearId: null }
 };
 window.DATA_MODELS = DATA_MODELS; // Expose for debugging
 
@@ -39,6 +43,7 @@ window.realtimeUnsubscribers = [];
 
 // Global var to hold user data after verification
 let currentUserData = null;
+let editingAcademicYearId = null;
 
 // -----------------
 // 🔐 APP INITIALIZATION & SECURITY
@@ -86,6 +91,23 @@ async function initializeApp(user, userData) {
     // Apply UI restrictions (which for admin, just means showing admin-only things)
     applyRoleRestrictions(userData.role);
 
+    // PHASE 1: Initialize appConfig/global singleton before any other setup
+    showSpinner('Initializing app configuration...');
+    try {
+        const appConfig = await initializeAppConfig();
+        if (appConfig) {
+            console.log('App configuration initialized:', appConfig);
+        }
+    } catch (err) {
+        console.warn('Failed to initialize appConfig (non-critical):', err);
+    }
+
+    // Load active academic year before listeners start.
+    await loadAcademicYearContext();
+    await watchAcademicYearContext(async () => {
+        location.reload();
+    });
+
     // Setup all event listeners
     setupEventListeners();
 
@@ -96,6 +118,7 @@ async function initializeApp(user, userData) {
     try {
         // Load all data for analytics
         await loadAllDataForAdmin();
+        await ensureAcademicYearSetup();
 
         // Populate dropdowns that depend on this data
         await populateClassDropdowns('user-class-id-select');
@@ -108,6 +131,8 @@ async function initializeApp(user, userData) {
         renderAdminAnalytics();
         renderClassesTable();
         renderUserRolesTable();
+        renderAcademicYearControls();
+        renderAdminEarlyAngelPortal();
     } catch (err) {
         console.error("Failed during admin data load:", err);
         showError("An error occurred loading admin tools: " + err.message);
@@ -169,6 +194,10 @@ function setupEventListeners() {
 
     // Header Actions
     document.getElementById('logout-btn').addEventListener('click', logout); // From common.js
+    document.getElementById('edit-profile-btn')?.addEventListener('click', openAdminProfileEditor);
+    document.getElementById('save-admin-profile-btn')?.addEventListener('click', saveAdminProfileEdits);
+    document.getElementById('cancel-admin-profile-edit-btn')?.addEventListener('click', closeAdminProfileEditor);
+    document.getElementById('close-admin-profile-modal-btn')?.addEventListener('click', closeAdminProfileEditor);
     document.getElementById('profile-btn').addEventListener('click', () => {
         document.getElementById('profile-menu').classList.toggle('is-hidden');
     });
@@ -178,6 +207,11 @@ function setupEventListeners() {
         if (menu && btn && !menu.classList.contains('is-hidden') && !menu.contains(e.target) && !btn.contains(e.target)) {
             menu.classList.add('is-hidden');
         }
+    });
+
+    const adminProfileModal = document.getElementById('admin-profile-modal');
+    adminProfileModal?.addEventListener('click', (e) => {
+        if (e.target === adminProfileModal) closeAdminProfileEditor();
     });
 
     // Session status change in modal
@@ -215,6 +249,13 @@ function setupEventListeners() {
     // Report class filter
     document.getElementById('report-class-filter')?.addEventListener('change', updateReportDropdown);
 
+    // Bulk Class Reports - populate dropdown on focus
+    const bulkClassSelect = document.getElementById('bulk-report-class-select');
+    if (bulkClassSelect) {
+        bulkClassSelect.addEventListener('focus', () => {
+            populateClassDropdowns('bulk-report-class-select');
+        });
+    }
 
     // Attendance session selection
     document.getElementById('session-date')?.addEventListener('change', (e) => {
@@ -246,6 +287,60 @@ function setupEventListeners() {
         bulkAttBtn.addEventListener('click', importBulkAttendance);
     }
 
+
+    function openAdminProfileEditor() {
+        const modal = document.getElementById('admin-profile-modal');
+        const emailEl = document.getElementById('admin-profile-email');
+        const displayNameInput = document.getElementById('admin-profile-display-name');
+        const phoneInput = document.getElementById('admin-profile-phone');
+
+        if (emailEl) emailEl.textContent = window.auth?.currentUser?.email || currentUserData?.email || '...';
+        if (displayNameInput) displayNameInput.value = currentUserData?.displayName || (window.auth?.currentUser?.email || '').split('@')[0] || '';
+        if (phoneInput) phoneInput.value = currentUserData?.phone || '';
+
+        if (modal) modal.style.display = 'flex';
+    }
+
+    function closeAdminProfileEditor() {
+        const modal = document.getElementById('admin-profile-modal');
+        if (modal) modal.style.display = 'none';
+    }
+
+    async function saveAdminProfileEdits() {
+        const uid = window.auth?.currentUser?.uid;
+        const displayName = document.getElementById('admin-profile-display-name')?.value.trim() || '';
+        const phone = document.getElementById('admin-profile-phone')?.value.trim() || '';
+
+        if (!displayName) {
+            return showError('Display name is required.');
+        }
+        if (!uid) {
+            return showError('Unable to save profile. Please login again.');
+        }
+
+        showSpinner();
+        try {
+            const payload = {
+                displayName,
+                phone,
+                updatedAt: new Date().toISOString(),
+            };
+
+            await window.setDoc(window.doc(window.db, 'userRoles', uid), payload, { merge: true });
+
+            currentUserData = {
+                ...(currentUserData || {}),
+                ...payload,
+            };
+
+            closeAdminProfileEditor();
+            showSuccess('Profile updated', 'Your admin profile was saved successfully.');
+        } catch (err) {
+            showError('Failed to save admin profile: ' + err.message);
+        } finally {
+            hideSpinner();
+        }
+    }
     // System Restore
     document.getElementById('btn-restore-system')?.addEventListener('click', restoreSystemFromBackup);
 
@@ -263,6 +358,32 @@ function setupEventListeners() {
     document.getElementById('export-full-backup-json')?.addEventListener('click', downloadJsonBackup);
     // Add this line inside setupEventListeners()
     document.getElementById('student-id-migration-form')?.addEventListener('submit', runStudentIdMigration);
+
+    // Academic year management
+    document.getElementById('academic-year-form')?.addEventListener('submit', saveAcademicYear);
+    document.getElementById('cancel-academic-year-edit-btn')?.addEventListener('click', resetAcademicYearForm);
+    document.getElementById('save-active-academic-year-btn')?.addEventListener('click', saveActiveAcademicYear);
+    document.getElementById('backfill-academic-year-btn')?.addEventListener('click', backfillAcademicYearForLegacyData);
+
+    // PHASE 2: Faculty Migration Wizard (Admin Controls)
+    document.getElementById('enable-migration-btn')?.addEventListener('click', enableMigrationForYear);
+    document.getElementById('disable-migration-btn')?.addEventListener('click', disableMigrationForAllYears);
+
+    // Early Angel dashboard portal
+    document.getElementById('open-admin-early-angel-btn')?.addEventListener('click', () => {
+        window.location.href = 'early-angel.html';
+    });
+    document.getElementById('open-admin-vbs-btn')?.addEventListener('click', () => {
+        window.location.href = 'vbs.html';
+    });
+    document.getElementById('close-admin-early-angel-btn')?.addEventListener('click', () => toggleAdminEarlyAngelPanel(false));
+    document.getElementById('admin-early-angel-class-filter')?.addEventListener('change', renderAdminEarlyAngelPortal);
+    document.getElementById('admin-early-angel-entry-class')?.addEventListener('change', handleAdminEarlyAngelEntryClassChange);
+    document.getElementById('admin-early-angel-entry-form')?.addEventListener('submit', saveAdminEarlyAngelEntry);
+    const adminEarlyAngelDate = document.getElementById('admin-early-angel-date');
+    if (adminEarlyAngelDate && !adminEarlyAngelDate.value) {
+        adminEarlyAngelDate.valueAsDate = new Date();
+    }
 }
 
 /**
@@ -290,11 +411,18 @@ function handleNavTabClick(e) {
     if (targetTab === 'reports') {
         updateReportDropdown();
     }
+    if (targetTab === 'dashboard') {
+        renderAdminEarlyAngelPortal();
+    }
     if (targetTab === 'admin-panel') {
         // Refresh admin data
-        loadAllDataForAdmin().then(() => {
+        loadAllDataForAdmin().then(async () => {
+            await ensureAcademicYearSetup();
             renderAdminAnalytics();
             renderClassesTable();
+            renderUserRolesTable();
+            renderAcademicYearControls();
+            renderAdminEarlyAngelPortal();
         });
     }
 }
@@ -372,7 +500,10 @@ function startRealtimeListeners() {
     const studentsQuery = collection(db, 'students');
     const unsubStudents = onSnapshot(studentsQuery, snapshot => {
         DATA_MODELS.students = [];
-        snapshot.forEach(doc => DATA_MODELS.students.push(doc.data()));
+        snapshot.forEach(doc => {
+            const data = doc.data();
+            DATA_MODELS.students.push(data);
+        });
         DATA_MODELS.students.sort((a, b) =>
             String(a.studentId).localeCompare(String(b.studentId), undefined, { numeric: true })
         );
@@ -387,7 +518,10 @@ function startRealtimeListeners() {
     const sessionsQuery = collection(db, 'sessions');
     const unsubSessions = onSnapshot(sessionsQuery, snapshot => {
         DATA_MODELS.sessions = [];
-        snapshot.forEach(doc => DATA_MODELS.sessions.push(doc.data()));
+        snapshot.forEach(doc => {
+            const data = doc.data();
+            if (isCurrentAcademicYear(data)) DATA_MODELS.sessions.push(data);
+        });
         renderSessionsTable();
         renderAttendanceForm(document.getElementById('session-date')?.value || '');
         renderDashboard();
@@ -399,7 +533,10 @@ function startRealtimeListeners() {
     const assessmentsQuery = collection(db, 'assessments');
     const unsubAssessments = onSnapshot(assessmentsQuery, (snapshot) => {
         DATA_MODELS.assessments = [];
-        snapshot.forEach((doc) => DATA_MODELS.assessments.push({ id: doc.id, ...doc.data() }));
+        snapshot.forEach((doc) => {
+            const data = { id: doc.id, ...doc.data() };
+            if (isCurrentAcademicYear(data)) DATA_MODELS.assessments.push(data);
+        });
         renderAssessmentsTable();
         console.log('[realtime] Synced assessments:', DATA_MODELS.assessments.length);
     }, err => console.error('[realtime] Assessments listener error:', err));
@@ -409,7 +546,10 @@ function startRealtimeListeners() {
     const attendanceQuery = collection(db, 'attendance');
     const unsubAttendance = onSnapshot(attendanceQuery, snapshot => {
         DATA_MODELS.attendance = [];
-        snapshot.forEach(doc => DATA_MODELS.attendance.push(doc.data()));
+        snapshot.forEach(doc => {
+            const data = doc.data();
+            if (isCurrentAcademicYear(data)) DATA_MODELS.attendance.push(data);
+        });
         const currentSession = document.getElementById('session-date')?.value;
         if (currentSession) renderAttendanceForm(currentSession);
         console.log('[realtime] attendance sync', DATA_MODELS.attendance.length);
@@ -420,7 +560,10 @@ function startRealtimeListeners() {
     const scoresQuery = collection(db, 'scores');
     const unsubScores = onSnapshot(scoresQuery, snapshot => {
         DATA_MODELS.scores = [];
-        snapshot.forEach(doc => DATA_MODELS.scores.push(doc.data()));
+        snapshot.forEach(doc => {
+            const data = doc.data();
+            if (isCurrentAcademicYear(data)) DATA_MODELS.scores.push(data);
+        });
         renderAssessmentsTable();
         if (window._currentScoresAssessmentId && document.getElementById('scores-modal').style.display === 'flex') {
             openScoresModal(window._currentScoresAssessmentId);
@@ -428,6 +571,59 @@ function startRealtimeListeners() {
         console.log('[realtime] scores sync', DATA_MODELS.scores.length);
     }, err => console.error('[realtime] scores listener error', err));
     window.realtimeUnsubscribers.push(unsubScores);
+
+    // EARLY ANGEL ENTRIES Listener (global)
+    const earlyAngelEntriesQuery = collection(db, 'earlyAngelEntries');
+    const unsubEarlyAngelEntries = onSnapshot(earlyAngelEntriesQuery, snapshot => {
+        DATA_MODELS.earlyAngelEntries = [];
+        snapshot.forEach(doc => {
+            const data = { id: doc.id, ...doc.data() };
+            if (isCurrentAcademicYear(data)) DATA_MODELS.earlyAngelEntries.push(data);
+        });
+        DATA_MODELS.earlyAngelEntries.sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+        renderAdminEarlyAngelPortal();
+        console.log('[realtime] earlyAngelEntries sync', DATA_MODELS.earlyAngelEntries.length);
+    }, err => console.error('[realtime] earlyAngelEntries listener error', err));
+    window.realtimeUnsubscribers.push(unsubEarlyAngelEntries);
+
+    // EARLY ANGEL LEADERBOARD Listener (global)
+    const earlyAngelLeaderboardQuery = collection(db, 'earlyAngelLeaderboard');
+    const unsubEarlyAngelLeaderboard = onSnapshot(earlyAngelLeaderboardQuery, snapshot => {
+        DATA_MODELS.earlyAngelLeaderboard = [];
+        snapshot.forEach(doc => {
+            const data = { id: doc.id, ...doc.data() };
+            if (isCurrentAcademicYear(data)) DATA_MODELS.earlyAngelLeaderboard.push(data);
+        });
+        DATA_MODELS.earlyAngelLeaderboard.sort((a, b) => Number(b.totalPoints || 0) - Number(a.totalPoints || 0));
+        renderAdminEarlyAngelPortal();
+        console.log('[realtime] earlyAngelLeaderboard sync', DATA_MODELS.earlyAngelLeaderboard.length);
+    }, err => console.error('[realtime] earlyAngelLeaderboard listener error', err));
+    window.realtimeUnsubscribers.push(unsubEarlyAngelLeaderboard);
+
+    // ACADEMIC YEARS Listener (PHASE 1)
+    const academicYearsQuery = collection(db, 'academicYears');
+    const unsubAcademicYears = onSnapshot(academicYearsQuery, snapshot => {
+        DATA_MODELS.academicYears = [];
+        snapshot.forEach(doc => {
+            DATA_MODELS.academicYears.push({ id: doc.id, ...doc.data() });
+        });
+        DATA_MODELS.academicYears.sort((a, b) => String(b.id || '').localeCompare(String(a.id || '')));
+        renderAcademicYearControls();
+        console.log('[realtime] academicYears sync', DATA_MODELS.academicYears.length);
+    }, err => console.error('[realtime] academicYears listener error', err));
+    window.realtimeUnsubscribers.push(unsubAcademicYears);
+
+    // ENROLLMENTS Listener (PHASE 1)
+    const enrollmentsQuery = collection(db, 'enrollments');
+    const unsubEnrollments = onSnapshot(enrollmentsQuery, snapshot => {
+        DATA_MODELS.enrollments = [];
+        snapshot.forEach(doc => {
+            const data = { id: doc.id, ...doc.data() };
+            if (isCurrentAcademicYear(data)) DATA_MODELS.enrollments.push(data);
+        });
+        console.log('[realtime] enrollments sync', DATA_MODELS.enrollments.length);
+    }, err => console.error('[realtime] enrollments listener error', err));
+    window.realtimeUnsubscribers.push(unsubEnrollments);
 }
 
 // -----------------
@@ -435,20 +631,31 @@ function startRealtimeListeners() {
 // -----------------
 async function renderDashboard() {
     // Render Stats Cards
+    const activeYearId = getActiveAcademicYearId() || DATA_MODELS.appConfig?.activeAcademicYearId || null;
+    const activeYear = (DATA_MODELS.academicYears || []).find(year => String(year.id || '') === String(activeYearId || ''));
+    const activeYearLabel = activeYear ? (activeYear.label || activeYear.yearLabel || activeYear.id) : (activeYearId || 'Not set');
+    const activeYearEl = document.getElementById('admin-active-year-label');
+    if (activeYearEl) activeYearEl.textContent = activeYearLabel;
+
+    const currentRoster = getCurrentAcademicYearRoster(DATA_MODELS.students, DATA_MODELS.enrollments || []);
+
+    const migrationEl = document.getElementById('admin-migration-status');
+    if (migrationEl) migrationEl.textContent = activeYear?.migrationEnabled ? 'On' : 'Off';
+
     const totalStudentsEl = document.getElementById('total-students');
-    if (totalStudentsEl) totalStudentsEl.textContent = DATA_MODELS.students.length;
+    if (totalStudentsEl) totalStudentsEl.textContent = currentRoster.length;
 
     const availableSessions = DATA_MODELS.sessions.filter(s => s.status === 'Available');
     const classesHeldEl = document.getElementById('classes-held');
     if (classesHeldEl) classesHeldEl.textContent = availableSessions.length;
 
-    if (DATA_MODELS.students.length > 0 && availableSessions.length > 0) {
+    if (currentRoster.length > 0 && availableSessions.length > 0) {
         let totalAttendance = 0;
-        DATA_MODELS.students.forEach(student => {
+        currentRoster.forEach(student => {
             const presentCount = DATA_MODELS.attendance.filter(a => (a.studentId === student.studentId) && (a.status === 'Present' || a.status === 'Late')).length;
             totalAttendance += Math.round((presentCount / availableSessions.length) * 100);
         });
-        const avgAttendance = DATA_MODELS.students.length > 0 ? Math.round(totalAttendance / DATA_MODELS.students.length) : 0;
+        const avgAttendance = currentRoster.length > 0 ? Math.round(totalAttendance / currentRoster.length) : 0;
         const avgAttendanceEl = document.getElementById('avg-attendance');
         if (avgAttendanceEl) avgAttendanceEl.textContent = `${avgAttendance}%`;
     } else {
@@ -502,6 +709,243 @@ async function renderDashboard() {
     }
 }
 
+function toggleAdminEarlyAngelPanel(show) {
+    const panel = document.getElementById('admin-early-angel-panel');
+    if (!panel) return;
+
+    panel.classList.toggle('is-hidden', !show);
+    if (show) {
+        renderAdminEarlyAngelPortal();
+        panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+}
+
+function populateAdminEarlyAngelClassFilter() {
+    const filterSelect = document.getElementById('admin-early-angel-class-filter');
+    const entryClassSelect = document.getElementById('admin-early-angel-entry-class');
+    const classes = [...(DATA_MODELS.classes || [])].sort((a, b) => String(a.id || '').localeCompare(String(b.id || '')));
+
+    if (filterSelect) {
+        const currentFilterValue = filterSelect.value;
+        filterSelect.innerHTML = '<option value="">-- All classes --</option>';
+        classes.forEach(classDoc => {
+            const option = document.createElement('option');
+            option.value = classDoc.id;
+            option.textContent = `${classDoc.id} - ${classDoc.name || classDoc.id}`;
+            filterSelect.appendChild(option);
+        });
+        if (currentFilterValue && classes.some(c => c.id === currentFilterValue)) {
+            filterSelect.value = currentFilterValue;
+        }
+    }
+
+    if (entryClassSelect) {
+        const currentEntryClassValue = entryClassSelect.value;
+        entryClassSelect.innerHTML = '<option value="">-- Select class --</option>';
+        classes.forEach(classDoc => {
+            const option = document.createElement('option');
+            option.value = classDoc.id;
+            option.textContent = `${classDoc.id} - ${classDoc.name || classDoc.id}`;
+            entryClassSelect.appendChild(option);
+        });
+
+        if (currentEntryClassValue && classes.some(c => c.id === currentEntryClassValue)) {
+            entryClassSelect.value = currentEntryClassValue;
+        } else if (!currentEntryClassValue && classes.length > 0) {
+            entryClassSelect.value = classes[0].id;
+        }
+    }
+}
+
+function handleAdminEarlyAngelEntryClassChange() {
+    populateAdminEarlyAngelStudentSelect();
+}
+
+function populateAdminEarlyAngelStudentSelect() {
+    const classSelect = document.getElementById('admin-early-angel-entry-class');
+    const studentSelect = document.getElementById('admin-early-angel-entry-student');
+    if (!classSelect || !studentSelect) return;
+
+    const classId = classSelect.value;
+    const currentValue = studentSelect.value;
+    studentSelect.innerHTML = '<option value="">-- Select student --</option>';
+
+    if (!classId) return;
+
+    const students = [...(DATA_MODELS.students || [])]
+        .filter(s => String(s.classId || '') === classId)
+        .sort((a, b) => String(a.studentId || '').localeCompare(String(b.studentId || ''), undefined, { numeric: true }));
+
+    students.forEach(student => {
+        const option = document.createElement('option');
+        option.value = String(student.studentId || '');
+        option.textContent = `${student.studentId} - ${student.firstName || ''} ${student.lastName || ''}`.trim();
+        studentSelect.appendChild(option);
+    });
+
+    if (currentValue && students.some(s => String(s.studentId) === currentValue)) {
+        studentSelect.value = currentValue;
+    }
+}
+
+function renderAdminEarlyAngelPortal() {
+    populateAdminEarlyAngelClassFilter();
+    populateAdminEarlyAngelStudentSelect();
+    renderAdminEarlyAngelLeaderboardTable();
+    renderAdminEarlyAngelEntriesTable();
+}
+
+function renderAdminEarlyAngelLeaderboardTable() {
+    const tbody = document.querySelector('#admin-early-angel-leaderboard-table tbody');
+    if (!tbody) return;
+
+    const classFilter = document.getElementById('admin-early-angel-class-filter')?.value || '';
+    const classesById = new Map((DATA_MODELS.classes || []).map(c => [String(c.id), c]));
+    const rows = (DATA_MODELS.earlyAngelLeaderboard || []).filter(r => !classFilter || String(r.classId) === classFilter);
+
+    tbody.innerHTML = '';
+    if (rows.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="5">No leaderboard data yet.</td></tr>';
+        return;
+    }
+
+    rows
+        .slice()
+        .sort((a, b) => Number(b.totalPoints || 0) - Number(a.totalPoints || 0))
+        .forEach((row, index) => {
+            const classDoc = classesById.get(String(row.classId || ''));
+            const classText = classDoc ? `${classDoc.id} - ${classDoc.name || classDoc.id}` : (row.classId || '-');
+            const tr = document.createElement('tr');
+            tr.innerHTML = `
+                <td>${index + 1}</td>
+                <td>${escapeHtml(classText)}</td>
+                <td>${escapeHtml(row.studentName || row.studentId || '-')}</td>
+                <td><strong>${Number(row.totalPoints || 0)}</strong></td>
+                <td>${Number(row.entryCount || 0)}</td>
+            `;
+            tbody.appendChild(tr);
+        });
+}
+
+function renderAdminEarlyAngelEntriesTable() {
+    const tbody = document.querySelector('#admin-early-angel-entries-table tbody');
+    if (!tbody) return;
+
+    const classFilter = document.getElementById('admin-early-angel-class-filter')?.value || '';
+    const classesById = new Map((DATA_MODELS.classes || []).map(c => [String(c.id), c]));
+    const rows = (DATA_MODELS.earlyAngelEntries || []).filter(r => !classFilter || String(r.classId) === classFilter);
+
+    tbody.innerHTML = '';
+    if (rows.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="6">No Early Angel entries yet.</td></tr>';
+        return;
+    }
+
+    rows
+        .slice(0, 100)
+        .forEach(row => {
+            const classDoc = classesById.get(String(row.classId || ''));
+            const classText = classDoc ? `${classDoc.id} - ${classDoc.name || classDoc.id}` : (row.classId || '-');
+            const dateLabel = row.entryDate ? formatDate(row.entryDate) : formatDate((row.createdAt || '').slice(0, 10));
+            const tr = document.createElement('tr');
+            tr.innerHTML = `
+                <td>${escapeHtml(dateLabel)}</td>
+                <td>${escapeHtml(classText)}</td>
+                <td>${escapeHtml(row.studentName || row.studentId || '-')}</td>
+                <td>${escapeHtml(row.category || '-')}</td>
+                <td>${Number(row.points || 0)}</td>
+                <td>${escapeHtml(row.notes || '-')}</td>
+            `;
+            tbody.appendChild(tr);
+        });
+}
+
+async function saveAdminEarlyAngelEntry(e) {
+    e.preventDefault();
+
+    const classId = (document.getElementById('admin-early-angel-entry-class')?.value || '').trim();
+    const studentId = (document.getElementById('admin-early-angel-entry-student')?.value || '').trim();
+    const points = Number(document.getElementById('admin-early-angel-points')?.value || 0);
+    const category = (document.getElementById('admin-early-angel-category')?.value || 'Other').trim();
+    const entryDate = document.getElementById('admin-early-angel-date')?.value || new Date().toISOString().slice(0, 10);
+    const notes = (document.getElementById('admin-early-angel-notes')?.value || '').trim();
+
+    const activeYearId = getActiveAcademicYearId();
+    if (!activeYearId) return showError('Active academic year is not configured.');
+    if (!classId) return showError('Please select a class.');
+    if (!studentId) return showError('Please select a student.');
+    if (!Number.isFinite(points) || points <= 0) return showError('Points must be a positive number.');
+
+    const student = (DATA_MODELS.students || []).find(s => String(s.studentId) === studentId && String(s.classId) === classId);
+    if (!student) return showError('Selected student is not available for the selected class.');
+
+    const studentName = `${student.firstName || ''} ${student.lastName || ''}`.trim() || studentId;
+    const nowIso = new Date().toISOString();
+
+    showSpinner();
+    try {
+        const entryPayload = withAcademicYear({
+            classId,
+            studentId,
+            studentName,
+            category,
+            points,
+            notes,
+            entryDate,
+            createdAt: nowIso,
+            createdBy: currentUserData?.uid || 'admin'
+        });
+
+        await addDoc(collection(window.db, 'earlyAngelEntries'), entryPayload);
+
+        const summaryDocId = `${activeYearId}_${classId}_${entryDate}_${studentId}`;
+        await setDoc(doc(window.db, 'earlyAngelDailySummary', summaryDocId), withAcademicYear({
+            classId,
+            date: entryDate,
+            studentId,
+            studentName,
+            pointsTotal: window.increment(points),
+            entryCount: window.increment(1),
+            lastUpdatedAt: nowIso,
+            updatedBy: currentUserData?.uid || 'admin'
+        }), { merge: true });
+
+        const leaderboardDocId = `${activeYearId}_${classId}_${studentId}`;
+        await setDoc(doc(window.db, 'earlyAngelLeaderboard', leaderboardDocId), withAcademicYear({
+            classId,
+            studentId,
+            studentName,
+            totalPoints: window.increment(points),
+            entryCount: window.increment(1),
+            lastEntryDate: entryDate,
+            lastUpdatedAt: nowIso,
+            updatedBy: currentUserData?.uid || 'admin'
+        }), { merge: true });
+
+        createAuditLog('admin_early_angel_entry_saved', {
+            classId,
+            studentId,
+            points,
+            category,
+            academicYearId: activeYearId
+        });
+
+        showSuccess('Early Angel entry saved.');
+        document.getElementById('admin-early-angel-entry-form')?.reset();
+        const dateInput = document.getElementById('admin-early-angel-date');
+        if (dateInput) dateInput.value = entryDate;
+        const pointsInput = document.getElementById('admin-early-angel-points');
+        if (pointsInput) pointsInput.value = '1';
+        const classSelect = document.getElementById('admin-early-angel-entry-class');
+        if (classSelect) classSelect.value = classId;
+        populateAdminEarlyAngelStudentSelect();
+    } catch (err) {
+        showError('Failed to save Early Angel entry: ' + err.message);
+    } finally {
+        hideSpinner();
+    }
+}
+
 
 // -------------------------------------------------------------------
 // --- ALL SHARED FUNCTIONS (STUDENTS, SESSIONS, REPORTS, ETC.) ---
@@ -515,12 +959,21 @@ function renderStudentsTable() {
     if (!tbody) return;
 
     const filterText = document.getElementById('student-search')?.value.toLowerCase() || '';
-    const filteredStudents = DATA_MODELS.students.filter(student => {
+    const rosterStudents = getCurrentAcademicYearRoster(DATA_MODELS.students, DATA_MODELS.enrollments || []);
+    const filteredStudents = rosterStudents.filter(student => {
         if (!filterText) return true;
-        return student.firstName.toLowerCase().includes(filterText) ||
-            student.lastName.toLowerCase().includes(filterText) ||
-            student.studentId.toLowerCase().includes(filterText) ||
-            (student.guardian && student.guardian.toLowerCase().includes(filterText));
+        const searchText = [
+            student.firstName,
+            student.lastName,
+            student.fullName,
+            student.studentId,
+            student.guardian,
+            student.phone,
+            student.email,
+            student.classId,
+            student.registerNo
+        ].filter(Boolean).join(' ').toLowerCase();
+        return searchText.includes(filterText);
     });
 
     tbody.innerHTML = '';
@@ -589,6 +1042,7 @@ async function saveStudent() {
         const { doc, setDoc } = window;
         const studentRef = doc(window.db, 'students', String(student.studentId));
         await setDoc(studentRef, student, { merge: true });
+        await upsertEnrollmentForStudent(student, currentUserData?.uid || 'admin');
 
         const action = id ? 'student_updated' : 'student_created';
         createAuditLog(action, { studentId: student.studentId, name: `${student.firstName} ${student.lastName}` });
@@ -604,7 +1058,9 @@ async function saveStudent() {
 }
 
 function editStudent(studentId) {
-    const student = DATA_MODELS.students.find(s => s.studentId === studentId);
+    const rosterStudent = getCurrentAcademicYearRoster(DATA_MODELS.students, DATA_MODELS.enrollments || [])
+        .find(s => String(s.studentId) === String(studentId));
+    const student = rosterStudent;
     if (student) {
         document.getElementById('student-id').value = student.studentId;
         document.getElementById('student-id-input').value = student.studentId;
@@ -643,7 +1099,8 @@ async function deleteStudent(studentId) {
 }
 
 function viewStudentDetails(studentId) {
-    const student = DATA_MODELS.students.find(s => s.studentId === studentId);
+    const student = getCurrentAcademicYearRoster(DATA_MODELS.students, DATA_MODELS.enrollments || [])
+        .find(s => String(s.studentId) === String(studentId));
     if (!student) return showError('Student not found.');
     const detailsHtml = `
         <p><strong>Student ID:</strong> ${escapeHtml(student.studentId)}</p>
@@ -717,16 +1174,17 @@ async function saveSession() {
     const date = document.getElementById('session-date-input').value;
     const status = document.getElementById('session-status').value;
     const noClassReason = (status === 'NoClass') ? document.getElementById('noclass-reason').value : null;
+    const sessionId = date;
 
     if (!date) return showError('Please select a date');
-    if (DATA_MODELS.sessions.some(s => s.date === date)) {
+    if (DATA_MODELS.sessions.some(s => s.id === sessionId || s.date === date)) {
         return showError('A session already exists for this date');
     }
 
-    const session = {
-        id: generateId(), date, status, noClassReason,
+    const session = withAcademicYear({
+        id: sessionId, date, status, noClassReason,
         createdAt: new Date().toISOString(),
-    };
+    });
 
     showSpinner();
     try {
@@ -820,7 +1278,7 @@ function renderAttendanceForm(sessionId) {
             <tbody>`;
 
     // Sort students by ID for taking attendance too
-    const sortedStudents = [...DATA_MODELS.students].sort((a, b) =>
+    const sortedStudents = getCurrentAcademicYearRoster(DATA_MODELS.students, DATA_MODELS.enrollments || []).sort((a, b) =>
         String(a.studentId).localeCompare(String(b.studentId), undefined, { numeric: true })
     );
 
@@ -862,15 +1320,16 @@ window.saveAttendance = async (sessionId) => {
         for (const select of inputs) {
             const studentId = select.dataset.student;
             const status = select.value;
-            const student = DATA_MODELS.students.find(s => s.studentId === studentId);
+            const student = getCurrentAcademicYearRoster(DATA_MODELS.students, DATA_MODELS.enrollments || [])
+                .find(s => String(s.studentId) === String(studentId));
 
             // Admin needs to look up the student's classId
             if (student && student.classId) {
-                const attendanceObj = {
+                const attendanceObj = withAcademicYear({
                     sessionId, studentId, status,
                     updatedAt: new Date().toISOString(),
                     classId: student.classId,
-                };
+                });
                 const docId = `${sessionId}_${studentId}`;
                 const docRef = doc(window.db, 'attendance', docId);
                 promises.push(setDoc(docRef, attendanceObj, { merge: true }));
@@ -906,7 +1365,8 @@ function renderAssessmentsTable() {
 
         // Calculate total students for that class
         // (Faculty logic handles this automatically via scoped DATA_MODELS)
-        const totalStudents = DATA_MODELS.students.filter(s => s.classId === assessment.classId).length;
+        const totalStudents = getCurrentAcademicYearRoster(DATA_MODELS.students, DATA_MODELS.enrollments || [])
+            .filter(s => String(s.classId || '') === String(assessment.classId || '')).length;
 
         const row = document.createElement('tr');
         row.innerHTML = `
@@ -958,9 +1418,9 @@ async function saveAssessment() {
         return showError('Please fill in all required fields.');
     }
 
-    const assessment = {
+    const assessment = withAcademicYear({
         id: generateId(), name, date, totalMarks, classId
-    };
+    });
 
     showSpinner();
     try {
@@ -1028,7 +1488,8 @@ function openScoresModal(assessmentId) {
     html += '<table class="data-table"><thead><tr><th>Student</th><th>Score</th></tr></thead><tbody>';
 
     // Filter students by the assessment's classId
-    const classStudents = DATA_MODELS.students.filter(s => s.classId === assessment.classId);
+    const classStudents = getCurrentAcademicYearRoster(DATA_MODELS.students, DATA_MODELS.enrollments || [])
+        .filter(s => String(s.classId || '') === String(assessment.classId || ''));
 
     classStudents.forEach(student => {
         const existing = DATA_MODELS.scores.find(s => s.assessmentId === assessmentId && s.studentId === student.studentId);
@@ -1070,11 +1531,11 @@ async function saveScores() {
                 return showError(`Invalid score for ${studentId}: ${marksStr}.`);
             }
         }
-        toWrite.push({
+        toWrite.push(withAcademicYear({
             assessmentId, studentId, marks,
             updatedAt: new Date().toISOString(),
             classId: assessment.classId
-        });
+        }));
     }
 
     showSpinner();
@@ -1101,9 +1562,8 @@ async function saveScores() {
 // -----------------
 function updateReportDropdown() {
     const classId = document.getElementById('report-class-filter').value;
-    const students = classId
-        ? DATA_MODELS.students.filter(s => s.classId === classId)
-        : DATA_MODELS.students;
+    const students = getCurrentAcademicYearRoster(DATA_MODELS.students, DATA_MODELS.enrollments || [])
+        .filter(s => !classId || String(s.classId || '') === String(classId));
 
     populateDropdown('report-student', students, s => s.studentId, s => `${s.firstName} ${s.lastName} (${s.studentId})`);
 
@@ -1111,8 +1571,13 @@ function updateReportDropdown() {
     document.getElementById('report-content').innerHTML = '<p>Select a student to generate a report</p>';
 }
 
-function generateStudentReport(studentId) {
-    const student = DATA_MODELS.students.find(s => s.studentId === studentId);
+/**
+ * Enhanced generateStudentReport with improved chart rendering.
+ * Waits for both charts to fully render before allowing export.
+ */
+async function generateStudentReport(studentId) {
+    const student = getCurrentAcademicYearRoster(DATA_MODELS.students, DATA_MODELS.enrollments || [])
+        .find(s => String(s.studentId) === String(studentId));
     if (!student) return;
     const container = document.getElementById('report-content');
     const availableSessions = DATA_MODELS.sessions.filter(s => s.status === 'Available');
@@ -1178,10 +1643,17 @@ function generateStudentReport(studentId) {
             <button class="btn btn-success" onclick="downloadReportPDF('${escapeHtml(studentId)}', DATA_MODELS)"><i class="fas fa-file-pdf"></i> PDF</button>
         </div>`;
     container.innerHTML = html;
-    setTimeout(() => {
-        renderMarksChart(assessmentDetails); // From common.js
-        renderAttendanceChart(studentId, DATA_MODELS); // From common.js
-    }, 100);
+
+    // Render charts with improved timing to ensure they complete before printing
+    await new Promise(resolve => {
+        // Initial render
+        renderMarksChart(assessmentDetails);
+        renderAttendanceChart(studentId, DATA_MODELS);
+
+        // Wait for chart animation to complete (Chart.js default animation is 750ms)
+        // Adding buffer time to ensure readiness
+        setTimeout(resolve, 1000);
+    });
 }
 
 /**
@@ -1195,7 +1667,7 @@ function generateOverallAttendanceReport() {
         .filter(s => s.status === 'Available')
         .sort((a, b) => new Date(a.date) - new Date(b.date));
 
-    const students = [...DATA_MODELS.students].sort((a, b) =>
+    const students = getCurrentAcademicYearRoster(DATA_MODELS.students, DATA_MODELS.enrollments || []).sort((a, b) =>
         String(a.studentId).localeCompare(String(b.studentId), undefined, { numeric: true })
     );
 
@@ -1553,9 +2025,11 @@ async function importCSV() {
     showSpinner();
     try {
         const { doc, setDoc } = window;
-        const promises = studentsToImport.map(student => {
+        const promises = studentsToImport.map(async student => {
+            const yearStudent = withAcademicYear(student);
             const studentRef = doc(window.db, 'students', String(student.studentId));
-            return setDoc(studentRef, student);
+            await setDoc(studentRef, yearStudent, { merge: true });
+            await upsertEnrollmentForStudent(yearStudent, currentUserData?.uid || 'admin');
         });
         await Promise.all(promises);
         document.getElementById('import-modal').style.display = 'none';
@@ -1600,7 +2074,7 @@ function downloadJsonBackup() {
     }
 }
 function exportStudentsToCsv() {
-    if (DATA_MODELS.students.length === 0) return showError('No student data to export.');
+    if ((getCurrentAcademicYearRoster(DATA_MODELS.students, DATA_MODELS.enrollments || [])).length === 0) return showError('No student data to export.');
     const headers = ['studentId', 'firstName', 'lastName', 'classId', 'guardian', 'phone', 'email', 'dob', 'notes'];
     exportToCsv(DATA_MODELS.students, headers, 'students_export.csv');
 }
@@ -1629,7 +2103,7 @@ function exportAttendanceToCsv() {
     csvContent += ",Total Present,Total Sessions,Percentage\n";
 
     // 2. Sort Students
-    const students = [...DATA_MODELS.students].sort((a, b) =>
+    const students = getCurrentAcademicYearRoster(DATA_MODELS.students, DATA_MODELS.enrollments || []).sort((a, b) =>
         String(a.studentId).localeCompare(String(b.studentId), undefined, { numeric: true })
     );
 
@@ -1706,8 +2180,23 @@ async function loadAllDataForAdmin() {
     }
     console.log('Loading all admin data for analytics...');
     try {
-        const { getDocs, collection } = window;
-        const collectionsToFetch = ['students', 'sessions', 'attendance', 'assessments', 'scores', 'userRoles', 'classes'];
+        const { getDocs, collection, getDoc, doc } = window;
+        const collectionsToFetch = [
+            'students',
+            'sessions',
+            'attendance',
+            'assessments',
+            'scores',
+            'earlyAngelEntries',
+            'earlyAngelDailySummary',
+            'earlyAngelLeaderboard',
+            'userRoles',
+            'classes',
+            'academicYears',
+            'enrollments',
+            'classYearCounters',
+            'facultyClassAssignments'
+        ];
         const promises = collectionsToFetch.map(colName => getDocs(collection(window.db, colName)));
         const snapshots = await Promise.all(promises);
         snapshots.forEach((snapshot, index) => {
@@ -1719,6 +2208,30 @@ async function loadAllDataForAdmin() {
                 if (colName === 'userRoles') data.uid = doc.id;
                 DATA_MODELS[colName].push(data);
             });
+        });
+
+        const appConfigSnap = await getDoc(doc(window.db, 'appConfig', 'global'));
+        DATA_MODELS.appConfig = appConfigSnap.exists()
+            ? { id: 'global', ...appConfigSnap.data() }
+            : { id: 'global', activeAcademicYearId: null };
+
+        setActiveAcademicYearContext(DATA_MODELS.appConfig.activeAcademicYearId || null);
+        if (typeof loadAcademicYearContext === 'function') {
+            await loadAcademicYearContext(true);
+        }
+
+        const yearScopedCollections = [
+            'sessions',
+            'attendance',
+            'assessments',
+            'scores',
+            'enrollments',
+            'earlyAngelEntries',
+            'earlyAngelDailySummary',
+            'earlyAngelLeaderboard'
+        ];
+        yearScopedCollections.forEach(colName => {
+            DATA_MODELS[colName] = (DATA_MODELS[colName] || []).filter(isCurrentAcademicYear);
         });
         console.log('All admin data loaded.');
     } catch (err) {
@@ -1741,7 +2254,8 @@ function renderAdminAnalytics() {
         const displayEmail = fac.email || fac.uid;
         const facultyClass = DATA_MODELS.classes.find(c => c.id === fac.classId);
         const className = facultyClass ? facultyClass.name : (fac.classId || 'N/A');
-        const students = DATA_MODELS.students.filter(s => s.classId === fac.classId);
+        const students = getCurrentAcademicYearRoster(DATA_MODELS.students, DATA_MODELS.enrollments || [])
+            .filter(s => String(s.classId || '') === String(fac.classId || ''));
         const studentCount = students.length;
         let totalPercentage = 0;
         let validStudents = 0;
@@ -1776,7 +2290,8 @@ function renderAnalyticsCharts() {
     if (availableSessions.length > 0) {
         classesToChart.forEach(classObj => {
             if (!classObj) return;
-            const studentsInClass = DATA_MODELS.students.filter(s => s.classId === classObj.id);
+            const studentsInClass = getCurrentAcademicYearRoster(DATA_MODELS.students, DATA_MODELS.enrollments || [])
+                .filter(s => String(s.classId || '') === String(classObj.id || ''));
             if (studentsInClass.length === 0) {
                 chartLabels.push(classObj.name); chartData.push(0); return;
             };
@@ -1847,6 +2362,415 @@ function renderAnalyticsCharts() {
             maintainAspectRatio: false,
             scales: { y: { beginAtZero: true, max: 100 } }
         }
+    });
+}
+
+function getDefaultAcademicYearId() {
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = now.getMonth();
+    // Academic year rolls over in June.
+    return month >= 5 ? `${year}-${year + 1}` : `${year - 1}-${year}`;
+}
+
+function getAcademicYearLabel(yearDoc) {
+    if (!yearDoc) return 'N/A';
+    return yearDoc.label || yearDoc.id || 'N/A';
+}
+
+async function ensureAcademicYearSetup() {
+    if (!window.db || !window.doc || !window.setDoc) return;
+
+    let requiresReload = false;
+    const defaultYearId = getDefaultAcademicYearId();
+    const defaultYearRef = window.doc(window.db, 'academicYears', defaultYearId);
+
+    if (!Array.isArray(DATA_MODELS.academicYears) || DATA_MODELS.academicYears.length === 0) {
+        await window.setDoc(defaultYearRef, {
+            id: defaultYearId,
+            label: `Academic Year ${defaultYearId}`,
+            startDate: `${defaultYearId.slice(0, 4)}-06-01`,
+            endDate: `${defaultYearId.slice(5)}-05-31`,
+            status: 'active',
+            migrationEnabled: false,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+        }, { merge: true });
+        requiresReload = true;
+    }
+
+    const configuredActiveYear = DATA_MODELS.appConfig?.activeAcademicYearId || null;
+    if (!configuredActiveYear) {
+        const fallbackYear = DATA_MODELS.academicYears?.[0]?.id || defaultYearId;
+        await window.setDoc(window.doc(window.db, 'appConfig', 'global'), {
+            activeAcademicYearId: fallbackYear,
+            updatedAt: new Date().toISOString(),
+        }, { merge: true });
+        requiresReload = true;
+    }
+
+    if (requiresReload) {
+        await loadAllDataForAdmin();
+    }
+
+    setActiveAcademicYearContext(DATA_MODELS.appConfig?.activeAcademicYearId || null);
+}
+
+function renderAcademicYearControls() {
+    const years = [...(DATA_MODELS.academicYears || [])].sort((a, b) => String(b.id || '').localeCompare(String(a.id || '')));
+    const activeYearId = DATA_MODELS.appConfig?.activeAcademicYearId || getActiveAcademicYearId() || '';
+
+    const activeYearDoc = years.find(y => y.id === activeYearId);
+    const activeYearTextEl = document.getElementById('active-academic-year-current');
+    if (activeYearTextEl) {
+        activeYearTextEl.textContent = activeYearDoc ? `${getAcademicYearLabel(activeYearDoc)} (${activeYearDoc.id})` : 'Not set';
+    }
+
+    populateDropdown(
+        'active-academic-year-select',
+        years,
+        y => y.id,
+        y => `${getAcademicYearLabel(y)} (${y.id})`
+    );
+
+    const activeSelect = document.getElementById('active-academic-year-select');
+    if (activeSelect && activeYearId) {
+        activeSelect.value = activeYearId;
+    }
+
+    populateDropdown(
+        'academic-year-previous-select',
+        years,
+        y => y.id,
+        y => `${getAcademicYearLabel(y)} (${y.id})`
+    );
+
+    const tableBody = document.querySelector('#academic-years-table tbody');
+    if (!tableBody) return;
+
+    tableBody.innerHTML = '';
+    if (years.length === 0) {
+        tableBody.innerHTML = '<tr><td colspan="8">No academic years configured.</td></tr>';
+        return;
+    }
+
+    years.forEach(year => {
+        const row = document.createElement('tr');
+        const isActive = year.id === activeYearId;
+        const canEdit = !!year.id;
+        row.innerHTML = `
+            <td>${escapeHtml(year.id || '-')}</td>
+            <td>${escapeHtml(getAcademicYearLabel(year))}</td>
+            <td>${escapeHtml(year.startDate || '-')}</td>
+            <td>${escapeHtml(year.endDate || '-')}</td>
+            <td>${escapeHtml(year.previousYearId || '-')}</td>
+            <td>${year.migrationEnabled ? '<span class="status-badge status-present">Enabled</span>' : '<span class="status-badge status-absent">Disabled</span>'}</td>
+            <td>${isActive ? '<span class="status-badge status-late">Active</span>' : '-'}</td>
+            <td>
+                ${canEdit
+                ? `<button type="button" class="btn btn-warning btn-sm edit-academic-year" data-id="${escapeHtml(year.id)}"><i class="fas fa-edit"></i> Edit</button>`
+                : '-'}
+            </td>
+        `;
+        tableBody.appendChild(row);
+    });
+
+    tableBody.querySelectorAll('.edit-academic-year').forEach(btn => {
+        btn.addEventListener('click', (e) => startEditAcademicYear(e.currentTarget.dataset.id));
+    });
+
+    if (editingAcademicYearId && !years.some(y => y.id === editingAcademicYearId)) {
+        resetAcademicYearForm();
+    }
+
+    // PHASE 2: Render migration wizard controls
+    renderMigrationWizardControls();
+}
+
+function startEditAcademicYear(yearId) {
+    const year = (DATA_MODELS.academicYears || []).find(y => y.id === yearId);
+    if (!year) {
+        return showError('Academic year not found. Refresh and try again.');
+    }
+
+    editingAcademicYearId = year.id;
+
+    const idInput = document.getElementById('academic-year-id-input');
+    const labelInput = document.getElementById('academic-year-label-input');
+    const startInput = document.getElementById('academic-year-start-input');
+    const endInput = document.getElementById('academic-year-end-input');
+    const previousInput = document.getElementById('academic-year-previous-select');
+    const migrationToggle = document.getElementById('academic-year-migration-enabled');
+    const titleEl = document.getElementById('academic-year-form-title');
+    const saveBtn = document.getElementById('save-academic-year-btn');
+    const cancelBtn = document.getElementById('cancel-academic-year-edit-btn');
+
+    if (idInput) {
+        idInput.value = year.id || '';
+        idInput.disabled = true;
+    }
+    if (labelInput) labelInput.value = year.label || '';
+    if (startInput) startInput.value = year.startDate || '';
+    if (endInput) endInput.value = year.endDate || '';
+    if (previousInput) previousInput.value = year.previousYearId || '';
+    if (migrationToggle) migrationToggle.checked = !!year.migrationEnabled;
+    if (titleEl) titleEl.textContent = `Edit Academic Year (${year.id})`;
+    if (saveBtn) saveBtn.innerHTML = '<i class="fas fa-save"></i> Update Academic Year';
+    if (cancelBtn) cancelBtn.style.display = 'inline-flex';
+
+    document.getElementById('academic-year-form')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function resetAcademicYearForm() {
+    editingAcademicYearId = null;
+
+    const form = document.getElementById('academic-year-form');
+    const idInput = document.getElementById('academic-year-id-input');
+    const titleEl = document.getElementById('academic-year-form-title');
+    const saveBtn = document.getElementById('save-academic-year-btn');
+    const cancelBtn = document.getElementById('cancel-academic-year-edit-btn');
+
+    form?.reset();
+    if (idInput) idInput.disabled = false;
+    if (titleEl) titleEl.textContent = 'Create / Update Academic Year';
+    if (saveBtn) saveBtn.innerHTML = '<i class="fas fa-save"></i> Save Academic Year';
+    if (cancelBtn) cancelBtn.style.display = 'none';
+}
+
+async function saveAcademicYear(e) {
+    e.preventDefault();
+    const idInput = document.getElementById('academic-year-id-input');
+    const labelInput = document.getElementById('academic-year-label-input');
+    const startInput = document.getElementById('academic-year-start-input');
+    const endInput = document.getElementById('academic-year-end-input');
+    const previousInput = document.getElementById('academic-year-previous-select');
+    const migrationToggle = document.getElementById('academic-year-migration-enabled');
+
+    const id = idInput?.value.trim();
+    const label = labelInput?.value.trim();
+    const startDate = startInput?.value || '';
+    const endDate = endInput?.value || '';
+    const previousYearId = previousInput?.value || null;
+    const migrationEnabled = !!migrationToggle?.checked;
+    const isEditMode = !!editingAcademicYearId;
+    const targetId = editingAcademicYearId || id;
+
+    if (!targetId || !startDate || !endDate) {
+        return showError('Please provide Year ID, Start Date and End Date.');
+    }
+
+    if (isEditMode && id && id !== editingAcademicYearId) {
+        return showError('Year ID cannot be changed while editing. Click Cancel Edit to create a new year.');
+    }
+
+    showSpinner();
+    try {
+        const payload = {
+            id: targetId,
+            label: label || `Academic Year ${targetId}`,
+            startDate,
+            endDate,
+            previousYearId,
+            migrationEnabled,
+            status: 'active',
+            updatedAt: new Date().toISOString(),
+        };
+
+        const existing = DATA_MODELS.academicYears.find(y => y.id === targetId);
+        if (!existing) {
+            payload.createdAt = new Date().toISOString();
+        }
+
+        await window.setDoc(window.doc(window.db, 'academicYears', targetId), payload, { merge: true });
+
+        if (!DATA_MODELS.appConfig?.activeAcademicYearId) {
+            await window.setDoc(window.doc(window.db, 'appConfig', 'global'), {
+                activeAcademicYearId: targetId,
+                updatedAt: new Date().toISOString(),
+            }, { merge: true });
+            setActiveAcademicYearContext(targetId);
+        }
+
+        createAuditLog(isEditMode ? 'academic_year_updated' : 'academic_year_saved', {
+            id: targetId,
+            migrationEnabled,
+            previousYearId,
+        });
+
+        await loadAllDataForAdmin();
+        renderAcademicYearControls();
+        resetAcademicYearForm();
+        showSuccess(isEditMode ? 'Academic year updated successfully.' : 'Academic year saved successfully.');
+    } catch (err) {
+        showError('Failed to save academic year: ' + err.message);
+    } finally {
+        hideSpinner();
+    }
+}
+
+async function saveActiveAcademicYear() {
+    const select = document.getElementById('active-academic-year-select');
+    const selectedYearId = select?.value || '';
+    if (!selectedYearId) return showError('Please choose an academic year.');
+
+    showSpinner();
+    try {
+        await window.setDoc(window.doc(window.db, 'appConfig', 'global'), {
+            activeAcademicYearId: selectedYearId,
+            updatedAt: new Date().toISOString(),
+        }, { merge: true });
+
+        setActiveAcademicYearContext(selectedYearId);
+        createAuditLog('academic_year_activated', { activeAcademicYearId: selectedYearId });
+
+        await loadAllDataForAdmin();
+        renderAcademicYearControls();
+        startRealtimeListeners();
+        showSuccess('Active academic year updated.');
+    } catch (err) {
+        showError('Failed to update active academic year: ' + err.message);
+    } finally {
+        hideSpinner();
+    }
+}
+
+async function backfillAcademicYearForLegacyData() {
+    const activeYearId = getActiveAcademicYearId();
+    if (!activeYearId) {
+        return showError('Set an active academic year before running backfill.');
+    }
+
+    const result = await showConfirmWithInput(
+        'Run Academic Year Backfill?',
+        `This will add academicYearId (${activeYearId}) to old records that do not have one. Type "BACKFILL" to continue.`,
+        'BACKFILL'
+    );
+    if (result.value !== 'BACKFILL') return showSuccess('Backfill canceled.');
+
+    showSpinner();
+    try {
+        const { collection, getDocs, setDoc } = window;
+        const targetCollections = ['students', 'sessions', 'assessments', 'attendance', 'scores'];
+        let updatedCount = 0;
+        let enrollmentCount = 0;
+
+        for (const colName of targetCollections) {
+            const snapshot = await getDocs(collection(window.db, colName));
+            const writePromises = [];
+
+            snapshot.forEach(docSnap => {
+                const data = docSnap.data() || {};
+                if (!data.academicYearId) {
+                    writePromises.push(setDoc(docSnap.ref, { academicYearId: activeYearId }, { merge: true }));
+                    updatedCount++;
+                }
+            });
+
+            if (writePromises.length > 0) {
+                await Promise.all(writePromises);
+            }
+
+            if (colName === 'students') {
+                for (const studentDoc of snapshot.docs) {
+                    const studentData = { ...studentDoc.data(), studentId: studentDoc.id, academicYearId: activeYearId };
+                    if (studentData.classId) {
+                        const enrollment = await upsertEnrollmentForStudent(studentData, currentUserData?.uid || 'admin');
+                        if (enrollment) enrollmentCount++;
+                    }
+                }
+            }
+        }
+
+        createAuditLog('academic_year_backfill_run', {
+            academicYearId: activeYearId,
+            updatedCount,
+            enrollmentCount,
+        });
+
+        await loadAllDataForAdmin();
+        renderAcademicYearControls();
+        startRealtimeListeners();
+        showSuccess('Backfill complete!', `Updated ${updatedCount} records and synced ${enrollmentCount} enrollments.`);
+    } catch (err) {
+        showError('Backfill failed: ' + err.message);
+    } finally {
+        hideSpinner();
+    }
+}
+
+/**
+ * PHASE 2: Enable migration for a specific academic year
+ * Admin UI calls this when clicking "Enable Migration" button
+ */
+async function enableMigrationForYear() {
+    const yearSelect = document.getElementById('migration-enable-year-select');
+    const selectedYearId = yearSelect?.value || '';
+    if (!selectedYearId) return showError('Please select an academic year.');
+
+    const year = DATA_MODELS.academicYears?.find(y => y.id === selectedYearId);
+    if (!year) return showError('Year not found.');
+
+    const result = await showConfirm(
+        `Enable Migration for ${year.label}?`,
+        `Faculty will be able to import students from ${year.previousYearId || 'the previous year'} to this year.`
+    );
+
+    if (!result.isConfirmed) return;
+
+    showSpinner();
+    try {
+        await setMigrationEnabled(selectedYearId, true);
+        await loadAllDataForAdmin();
+        renderAcademicYearControls();
+        showSuccess('Migration enabled for ' + year.label);
+    } catch (err) {
+        showError('Failed to enable migration: ' + err.message);
+    } finally {
+        hideSpinner();
+    }
+}
+
+/**
+ * PHASE 2: Disable migration for all years
+ */
+async function disableMigrationForAllYears() {
+    const result = await showConfirm(
+        'Disable All Migrations?',
+        'Faculty will no longer be able to import students from previous years.'
+    );
+
+    if (!result.isConfirmed) return;
+
+    showSpinner();
+    try {
+        const promises = (DATA_MODELS.academicYears || []).map(year =>
+            setMigrationEnabled(year.id, false)
+        );
+        await Promise.all(promises);
+        await loadAllDataForAdmin();
+        renderAcademicYearControls();
+        showSuccess('All migrations disabled.');
+    } catch (err) {
+        showError('Failed to disable migrations: ' + err.message);
+    } finally {
+        hideSpinner();
+    }
+}
+
+/**
+ * PHASE 2: Populate migration wizard controls
+ */
+function renderMigrationWizardControls() {
+    const select = document.getElementById('migration-enable-year-select');
+    if (!select) return;
+
+    const years = (DATA_MODELS.academicYears || []).filter(y => y.status === 'active');
+    select.innerHTML = '<option value="">-- Select --</option>';
+    years.forEach(year => {
+        const option = document.createElement('option');
+        option.value = year.id;
+        option.textContent = `${year.label} (${year.id})${year.migrationEnabled ? ' [Migration ON]' : ''}`;
+        select.appendChild(option);
     });
 }
 
@@ -1983,6 +2907,23 @@ async function saveUserRole(e) {
     try {
         const { doc, setDoc } = window;
         await setDoc(doc(window.db, 'userRoles', uid), roleData);
+
+        if (role === 'faculty') {
+            const activeYearId = getActiveAcademicYearId() || DATA_MODELS.appConfig?.activeAcademicYearId || null;
+            if (activeYearId) {
+                const assignmentId = `${activeYearId}_${uid}`;
+                await setDoc(doc(window.db, 'facultyClassAssignments', assignmentId), {
+                    id: assignmentId,
+                    academicYearId: activeYearId,
+                    uid,
+                    email,
+                    classId,
+                    updatedAt: new Date().toISOString(),
+                    updatedBy: currentUserData?.uid || 'admin'
+                }, { merge: true });
+            }
+        }
+
         showSuccess('User role saved!');
         createAuditLog('user_role_updated', { assignedUid: uid, role: role, classId: classId, email: email });
         document.getElementById('user-role-form').reset();
@@ -2381,12 +3322,12 @@ async function importBulkAttendance() {
         // A. Create Sessions (Batching not strictly needed for small session counts, but good practice)
         const sessionPromises = sessions.map(date => {
             const sessionRef = doc(db, 'sessions', date);
-            return setDoc(sessionRef, {
+            return setDoc(sessionRef, withAcademicYear({
                 id: date,
                 date: date,
                 status: 'Available',
                 createdAt: new Date().toISOString()
-            }, { merge: true });
+            }), { merge: true });
         });
 
         await Promise.all(sessionPromises);
@@ -2402,7 +3343,7 @@ async function importBulkAttendance() {
             chunk.forEach(record => {
                 const docId = `${record.sessionId}_${record.studentId}`;
                 const attRef = doc(db, 'attendance', docId);
-                batch.set(attRef, record, { merge: true });
+                batch.set(attRef, withAcademicYear(record), { merge: true });
             });
 
             await batch.commit();
@@ -2474,7 +3415,8 @@ function viewAssessmentReport(assessmentId) {
     reportView.style.display = 'block';
 
     // 3. Filter Data
-    const students = DATA_MODELS.students.filter(s => s.classId === assessment.classId)
+    const students = getCurrentAcademicYearRoster(DATA_MODELS.students, DATA_MODELS.enrollments || [])
+        .filter(s => String(s.classId || '') === String(assessment.classId || ''))
         .sort((a, b) => String(a.studentId).localeCompare(String(b.studentId), undefined, { numeric: true }));
     const scores = DATA_MODELS.scores.filter(s => s.assessmentId === assessmentId);
 
@@ -2551,7 +3493,8 @@ function exportAssessmentToCsv(assessmentId) {
     const assessment = DATA_MODELS.assessments.find(a => a.id === assessmentId);
     if (!assessment) return;
 
-    const students = DATA_MODELS.students.filter(s => s.classId === assessment.classId)
+    const students = getCurrentAcademicYearRoster(DATA_MODELS.students, DATA_MODELS.enrollments || [])
+        .filter(s => String(s.classId || '') === String(assessment.classId || ''))
         .sort((a, b) => String(a.studentId).localeCompare(String(b.studentId), undefined, { numeric: true }));
     const scores = DATA_MODELS.scores.filter(s => s.assessmentId === assessmentId);
 
@@ -2696,10 +3639,25 @@ function renderUserRolesTable() {
     const tbody = document.querySelector('#user-roles-table tbody');
     if (!tbody) return; // Element might not exist yet in HTML
 
+    const activeYearLabel = document.getElementById('faculty-assignment-active-year');
+    const activeYearId = getActiveAcademicYearId() || DATA_MODELS.appConfig?.activeAcademicYearId || 'Not set';
+    if (activeYearLabel) {
+        activeYearLabel.textContent = `Active year faculty-class assignment: ${activeYearId}`;
+    }
+
+    const activeAssignmentsByUid = new Map(
+        (DATA_MODELS.facultyClassAssignments || [])
+            .filter(item => String(item.academicYearId || '') === String(activeYearId))
+            .map(item => [String(item.uid || ''), item])
+    );
+
     tbody.innerHTML = '';
 
     // Filter valid roles
     const roles = DATA_MODELS.userRoles || [];
+    const classes = [...(DATA_MODELS.classes || [])].sort((a, b) =>
+        String(a.id || '').localeCompare(String(b.id || ''), undefined, { numeric: true })
+    );
 
     if (roles.length === 0) {
         tbody.innerHTML = '<tr><td colspan="4">No roles found.</td></tr>';
@@ -2707,11 +3665,33 @@ function renderUserRolesTable() {
     }
 
     roles.forEach(user => {
+        const isFaculty = String(user.role || '').trim().toLowerCase() === 'faculty';
+        const assignedClassId = isFaculty
+            ? String(activeAssignmentsByUid.get(String(user.uid || ''))?.classId || user.classId || '')
+            : String(user.classId || '');
+
+        const classEditorHtml = isFaculty
+            ? `
+                <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                    <select class="faculty-class-select" data-uid="${escapeHtml(user.uid)}" style="min-width:170px;">
+                        <option value="">-- Select class --</option>
+                        ${classes.map(cls => {
+                const selected = String(cls.id || '') === assignedClassId ? 'selected' : '';
+                return `<option value="${escapeHtml(cls.id)}" ${selected}>${escapeHtml(cls.name || cls.id)}</option>`;
+            }).join('')}
+                    </select>
+                    <button class="btn btn-primary btn-sm save-faculty-class" data-uid="${escapeHtml(user.uid)}">
+                        <i class="fas fa-save"></i> Update
+                    </button>
+                </div>
+            `
+            : escapeHtml(user.classId || '-');
+
         const row = document.createElement('tr');
         row.innerHTML = `
             <td>${escapeHtml(user.email || 'No Email')}</td>
             <td><span class="status-badge status-${user.role === 'admin' ? 'present' : 'late'}">${user.role.toUpperCase()}</span></td>
-            <td>${escapeHtml(user.classId || '-')}</td>
+            <td>${classEditorHtml}</td>
             <td>
                 <button class="btn btn-danger btn-sm delete-role" data-uid="${user.uid}">
                     <i class="fas fa-trash"></i> Revoke
@@ -2725,6 +3705,68 @@ function renderUserRolesTable() {
     tbody.querySelectorAll('.delete-role').forEach(btn => {
         btn.addEventListener('click', (e) => deleteUserRole(e.currentTarget.dataset.uid));
     });
+
+    tbody.querySelectorAll('.save-faculty-class').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            const uid = String(e.currentTarget.dataset.uid || '').trim();
+            const select = tbody.querySelector(`.faculty-class-select[data-uid="${uid}"]`);
+            const classId = String(select?.value || '').trim();
+            updateFacultyClassAssignment(uid, classId);
+        });
+    });
+}
+
+async function updateFacultyClassAssignment(uid, classId) {
+    if (!uid) return showError('Invalid faculty UID.');
+    if (!classId) return showError('Please select a class before updating.');
+
+    const roleDoc = (DATA_MODELS.userRoles || []).find(user => String(user.uid || '') === String(uid));
+    if (!roleDoc) return showError('Faculty role not found. Refresh and try again.');
+    if (String(roleDoc.role || '').trim().toLowerCase() !== 'faculty') return showError('Class assignment is allowed only for faculty users.');
+
+    const activeYearId = getActiveAcademicYearId() || DATA_MODELS.appConfig?.activeAcademicYearId || null;
+    const nowIso = new Date().toISOString();
+
+    showSpinner();
+    try {
+        const userRolePayload = {
+            ...roleDoc,
+            role: 'faculty',
+            classId,
+            updatedAt: nowIso,
+            updatedBy: currentUserData?.uid || 'admin'
+        };
+
+        await window.setDoc(window.doc(window.db, 'userRoles', uid), userRolePayload, { merge: true });
+
+        if (activeYearId) {
+            const assignmentId = `${activeYearId}_${uid}`;
+            await window.setDoc(window.doc(window.db, 'facultyClassAssignments', assignmentId), {
+                id: assignmentId,
+                academicYearId: activeYearId,
+                uid,
+                email: roleDoc.email || '',
+                classId,
+                updatedAt: nowIso,
+                updatedBy: currentUserData?.uid || 'admin'
+            }, { merge: true });
+        }
+
+        createAuditLog('faculty_class_assignment_updated', {
+            uid,
+            classId,
+            academicYearId: activeYearId,
+        });
+
+        await loadAllDataForAdmin();
+        renderUserRolesTable();
+        renderAdminAnalytics();
+        showSuccess('Assignment Updated', `Faculty class updated to ${classId}.`);
+    } catch (err) {
+        showError('Failed to update faculty class assignment: ' + err.message);
+    } finally {
+        hideSpinner();
+    }
 }
 
 async function deleteUserRole(uid) {
@@ -2735,7 +3777,11 @@ async function deleteUserRole(uid) {
         const { doc, deleteDoc } = window;
         await deleteDoc(doc(window.db, 'userRoles', uid));
 
-        createAuditLog('user_role_revoked', { uid });
+        const linkedAssignments = (DATA_MODELS.facultyClassAssignments || [])
+            .filter(item => String(item.uid || '') === String(uid));
+        await Promise.all(linkedAssignments.map(item => deleteDoc(doc(window.db, 'facultyClassAssignments', String(item.id)))));
+
+        createAuditLog('user_role_revoked', { uid, removedAssignments: linkedAssignments.length });
         showSuccess('Access Revoked');
 
         // Refresh data

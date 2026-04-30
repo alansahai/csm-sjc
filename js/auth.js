@@ -3,6 +3,24 @@
  * Handles login for Faculty (Firebase Auth) and Students (Firestore Lookup).
  */
 
+async function getActiveAcademicYearIdFromConfig() {
+    if (!window.db || !window.doc || !window.getDoc) return null;
+    try {
+        const snap = await window.getDoc(window.doc(window.db, 'appConfig', 'global'));
+        if (!snap.exists()) return null;
+        return snap.data()?.activeAcademicYearId || null;
+    } catch (err) {
+        console.warn('Failed to fetch active academic year from config:', err);
+        return null;
+    }
+}
+
+function isStudentInActiveYear(studentData, activeAcademicYearId) {
+    if (!studentData) return false;
+    if (!activeAcademicYearId) return true;
+    return !studentData.academicYearId || studentData.academicYearId === activeAcademicYearId;
+}
+
 document.addEventListener('DOMContentLoaded', function () {
     const loginForm = document.getElementById('login-form');       // Faculty
     const studentForm = document.getElementById('student-login-form'); // Student
@@ -96,6 +114,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 // 1. Try to find by Student ID (Doc ID)
                 let studentData = null;
                 const { doc, getDoc, collection, query, where, getDocs, db } = window;
+                const activeAcademicYearId = await getActiveAcademicYearIdFromConfig();
 
                 // Check by ID first (assuming identifier is the doc ID)
                 const docRef = doc(db, 'students', identifier);
@@ -108,15 +127,35 @@ document.addEventListener('DOMContentLoaded', function () {
                     const q = query(collection(db, 'students'), where('phone', '==', identifier));
                     const querySnap = await getDocs(q);
                     if (!querySnap.empty) {
-                        studentData = querySnap.docs[0].data();
+                        const candidateStudents = querySnap.docs.map(d => d.data());
+                        studentData = candidateStudents.find(s => !s.academicYearId)
+                            || candidateStudents[0];
                     }
                 }
 
                 // 3. Validate DOB
                 if (studentData) {
+                    let enrollmentData = null;
+                    if (activeAcademicYearId) {
+                        const enrollmentQuery = query(
+                            collection(db, 'enrollments'),
+                            where('academicYearId', '==', activeAcademicYearId),
+                            where('studentId', '==', studentData.studentId)
+                        );
+                        const enrollmentSnap = await getDocs(enrollmentQuery);
+                        enrollmentData = enrollmentSnap.empty ? null : enrollmentSnap.docs[0].data();
+                    }
+
                     if (studentData.dob === dob) {
+                        const activeStudentData = {
+                            ...studentData,
+                            academicYearId: enrollmentData?.academicYearId || studentData.academicYearId || activeAcademicYearId || null,
+                            classId: enrollmentData?.classId || studentData.classId || null,
+                            registerNo: enrollmentData?.registerNo ?? studentData.registerNo ?? null,
+                            enrollmentId: enrollmentData?.id || null
+                        };
                         // SUCCESS: Store in Session Storage (Cleared on browser close)
-                        sessionStorage.setItem('currentStudent', JSON.stringify(studentData));
+                        sessionStorage.setItem('currentStudent', JSON.stringify(activeStudentData));
                         window.location.href = 'student.html';
                     } else {
                         throw new Error('Date of Birth does not match our records.');

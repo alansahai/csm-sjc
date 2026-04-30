@@ -24,9 +24,15 @@ function handleAppError(message, filename = '', lineno = '') {
 const DATA_MODELS = {
     students: [],
     sessions: [],
-    attendance: [],
     assessments: [],
-    scores: []
+    attendance: [],
+    scores: [],
+    earlyAngelEntries: [],
+    earlyAngelLeaderboard: [],
+    enrollments: [],
+    classYearCounters: [],
+    facultyClassAssignments: [],
+    appConfig: { activeAcademicYearId: null }
 };
 window.DATA_MODELS = DATA_MODELS; // Expose for debugging
 
@@ -35,6 +41,14 @@ window.realtimeUnsubscribers = [];
 
 // Global var to hold user data after verification
 let currentUserData = null;
+const FACULTY_ONBOARDING_VERSION = 1;
+let facultyOnboardingResolver = null;
+const YEAR_MIGRATION_STATE = {
+    activeYearId: null,
+    previousYearId: null,
+    migrationEnabled: false,
+    candidates: []
+};
 
 // -----------------
 // 🔐 APP INITIALIZATION & SECURITY
@@ -55,13 +69,12 @@ document.addEventListener('DOMContentLoaded', function () {
                 // --- USER IS VALID FACULTY ---
                 console.log(`Welcome, ${user.email}! Role: ${userData.role}`);
                 currentUserData = userData;
-                initializeApp(user, userData);
+                await initializeApp(user, userData);
 
             } catch (err) {
                 // Role verification failed
                 console.error("CRITICAL ERROR:", err); // Debug Log 2
-                alert(`Login Error: ${err.message}\n\nCheck console for details.`); // Stop redirect with alert
-                // await logout(); // COMMENTED OUT TO STOP LOOP
+                Swal.fire('Login Error', err.message || 'Access denied', 'error').then(() => logout());
             }
         } else {
             // No user signed in
@@ -79,16 +92,27 @@ document.addEventListener('DOMContentLoaded', function () {
  * @param {object} user - The Firebase Auth user object.
  * @param {object} userData - The user data from Firestore ({role, classId, ...}).
  */
-function initializeApp(user, userData) {
+async function initializeApp(user, userData) {
     // Populate profile menu
     document.getElementById('user-info-email').textContent = user.email;
     document.getElementById('user-info-role').textContent = `Faculty - ${userData.classId || 'Unassigned'}`;
+
+    await loadAcademicYearContext();
+    await watchAcademicYearContext(async () => {
+        location.reload();
+    });
 
     // Apply UI restrictions (hides admin-only buttons)
     applyRoleRestrictions(userData.role);
 
     // Setup all event listeners for the page
     setupEventListeners();
+
+    // Prepare year migration tools (Phase 2 kickoff)
+    await initializeYearMigrationPanel();
+
+    // First-login onboarding for faculty users
+    await maybeRunFacultyOnboarding(user, userData);
 
     // Start fetching realtime data
     startRealtimeListeners();
@@ -150,12 +174,19 @@ function setupEventListeners() {
     // Close modal on outside click
     window.addEventListener('click', (e) => {
         document.querySelectorAll('.modal').forEach(modal => {
+            if (modal.id === 'faculty-onboarding-modal' && modal.style.display === 'flex') return;
             if (e.target === modal) modal.style.display = 'none';
         });
     });
 
     // Logout Button (in profile menu)
     document.getElementById('logout-btn').addEventListener('click', logout); // From common.js
+
+    // Faculty profile editing
+    document.getElementById('edit-profile-btn')?.addEventListener('click', openFacultyProfileEditor);
+    document.getElementById('save-faculty-profile-btn')?.addEventListener('click', saveFacultyProfileEdits);
+    document.getElementById('cancel-faculty-profile-edit-btn')?.addEventListener('click', closeFacultyProfileEditor);
+    document.getElementById('close-faculty-profile-modal-btn')?.addEventListener('click', closeFacultyProfileEditor);
 
     // Profile Menu Toggle
     document.getElementById('profile-btn').addEventListener('click', () => {
@@ -169,6 +200,11 @@ function setupEventListeners() {
         if (menu && btn && !menu.classList.contains('is-hidden') && !menu.contains(e.target) && !btn.contains(e.target)) {
             menu.classList.add('is-hidden');
         }
+    });
+
+    const facultyProfileModal = document.getElementById('faculty-profile-modal');
+    facultyProfileModal?.addEventListener('click', (e) => {
+        if (e.target === facultyProfileModal) closeFacultyProfileEditor();
     });
 
     // Session status change in modal
@@ -231,6 +267,89 @@ function setupEventListeners() {
     document.getElementById('close-view-modal')?.addEventListener('click', () => {
         document.getElementById('student-view-modal').style.display = 'none';
     });
+
+    // Academic year migration tools
+    document.getElementById('preview-year-migration-btn')?.addEventListener('click', loadYearMigrationCandidates);
+    document.getElementById('run-year-migration-btn')?.addEventListener('click', runYearMigration);
+
+    // Faculty onboarding
+    document.getElementById('faculty-onboarding-form')?.addEventListener('submit', completeFacultyOnboarding);
+
+    // Early Angel portal
+    document.getElementById('open-early-angel-btn')?.addEventListener('click', () => {
+        window.location.href = 'early-angel.html';
+    });
+    document.getElementById('open-vbs-btn')?.addEventListener('click', () => {
+        window.location.href = 'vbs.html';
+    });
+    document.getElementById('close-early-angel-btn')?.addEventListener('click', () => toggleEarlyAngelPanel(false));
+    document.getElementById('early-angel-entry-form')?.addEventListener('submit', saveEarlyAngelEntry);
+    document.getElementById('early-angel-student-filter')?.addEventListener('change', renderEarlyAngelTables);
+    const earlyAngelDateInput = document.getElementById('early-angel-date');
+    if (earlyAngelDateInput && !earlyAngelDateInput.value) {
+        earlyAngelDateInput.valueAsDate = new Date();
+    }
+
+    // PHASE 3: Quick Onboarding Listeners
+    setupQuickOnboardingListeners();
+    initializeQuickOnboarding();
+}
+
+function openFacultyProfileEditor() {
+    const modal = document.getElementById('faculty-profile-modal');
+    const emailEl = document.getElementById('faculty-profile-email');
+    const classEl = document.getElementById('faculty-profile-class');
+    const displayNameInput = document.getElementById('faculty-profile-display-name');
+    const phoneInput = document.getElementById('faculty-profile-phone');
+
+    if (emailEl) emailEl.textContent = window.auth?.currentUser?.email || currentUserData?.email || '...';
+    if (classEl) classEl.textContent = currentUserData?.classId || 'Unassigned';
+    if (displayNameInput) displayNameInput.value = currentUserData?.displayName || (window.auth?.currentUser?.email || '').split('@')[0] || '';
+    if (phoneInput) phoneInput.value = currentUserData?.phone || '';
+
+    if (modal) modal.style.display = 'flex';
+}
+
+function closeFacultyProfileEditor() {
+    const modal = document.getElementById('faculty-profile-modal');
+    if (modal) modal.style.display = 'none';
+}
+
+async function saveFacultyProfileEdits() {
+    const uid = window.auth?.currentUser?.uid;
+    const displayName = document.getElementById('faculty-profile-display-name')?.value.trim() || '';
+    const phone = document.getElementById('faculty-profile-phone')?.value.trim() || '';
+
+    if (!displayName) {
+        return showError('Display name is required.');
+    }
+    if (!uid) {
+        return showError('Unable to save profile. Please login again.');
+    }
+
+    showSpinner();
+    try {
+        const payload = {
+            displayName,
+            phone,
+            updatedAt: new Date().toISOString(),
+        };
+
+        await setDoc(doc(window.db, 'userRoles', uid), payload, { merge: true });
+
+        currentUserData = {
+            ...(currentUserData || {}),
+            ...payload,
+        };
+
+        document.getElementById('user-info-email').textContent = window.auth?.currentUser?.email || currentUserData?.email || 'unknown';
+        closeFacultyProfileEditor();
+        showSuccess('Profile updated', 'Your faculty profile was saved successfully.');
+    } catch (err) {
+        showError('Failed to save faculty profile: ' + err.message);
+    } finally {
+        hideSpinner();
+    }
 }
 
 /**
@@ -350,12 +469,17 @@ function startRealtimeListeners() {
     );
     const unsubStudents = onSnapshot(studentsQuery, snapshot => {
         DATA_MODELS.students = [];
-        snapshot.forEach(doc => DATA_MODELS.students.push(doc.data()));
+        snapshot.forEach(doc => {
+            const data = doc.data();
+            DATA_MODELS.students.push(data);
+        });
         DATA_MODELS.students.sort((a, b) =>
             String(a.studentId).localeCompare(String(b.studentId), undefined, { numeric: true })
         );
         renderStudentsTable();
         updateReportDropdown();
+        renderEarlyAngelStudentSelectors();
+        renderEarlyAngelTables();
         renderDashboard();
         console.log('[realtime] students sync', DATA_MODELS.students.length);
     }, err => console.error('[realtime] students listener error', err));
@@ -365,7 +489,10 @@ function startRealtimeListeners() {
     const sessionsQuery = collection(db, 'sessions');
     const unsubSessions = onSnapshot(sessionsQuery, snapshot => {
         DATA_MODELS.sessions = [];
-        snapshot.forEach(doc => DATA_MODELS.sessions.push(doc.data()));
+        snapshot.forEach(doc => {
+            const data = doc.data();
+            if (isCurrentAcademicYear(data)) DATA_MODELS.sessions.push(data);
+        });
         renderSessionsTable();
         renderAttendanceForm(document.getElementById('session-date')?.value || '');
         renderDashboard();
@@ -380,7 +507,10 @@ function startRealtimeListeners() {
     );
     const unsubAssessments = onSnapshot(assessmentsQuery, (snapshot) => {
         DATA_MODELS.assessments = [];
-        snapshot.forEach((doc) => DATA_MODELS.assessments.push({ id: doc.id, ...doc.data() }));
+        snapshot.forEach((doc) => {
+            const data = { id: doc.id, ...doc.data() };
+            if (isCurrentAcademicYear(data)) DATA_MODELS.assessments.push(data);
+        });
         renderAssessmentsTable();
         console.log('[realtime] Synced assessments:', DATA_MODELS.assessments.length);
     }, err => console.error('[realtime] Assessments listener error:', err));
@@ -393,7 +523,10 @@ function startRealtimeListeners() {
     );
     const unsubAttendance = onSnapshot(attendanceQuery, snapshot => {
         DATA_MODELS.attendance = [];
-        snapshot.forEach(doc => DATA_MODELS.attendance.push(doc.data()));
+        snapshot.forEach(doc => {
+            const data = doc.data();
+            if (isCurrentAcademicYear(data)) DATA_MODELS.attendance.push(data);
+        });
         const currentSession = document.getElementById('session-date')?.value;
         if (currentSession) renderAttendanceForm(currentSession);
         console.log('[realtime] attendance sync', DATA_MODELS.attendance.length);
@@ -407,7 +540,10 @@ function startRealtimeListeners() {
     );
     const unsubScores = onSnapshot(scoresQuery, snapshot => {
         DATA_MODELS.scores = [];
-        snapshot.forEach(doc => DATA_MODELS.scores.push(doc.data()));
+        snapshot.forEach(doc => {
+            const data = doc.data();
+            if (isCurrentAcademicYear(data)) DATA_MODELS.scores.push(data);
+        });
         renderAssessmentsTable();
         // Refresh scores modal if open
         const scoresModal = document.getElementById('scores-modal');
@@ -417,6 +553,55 @@ function startRealtimeListeners() {
         console.log('[realtime] scores sync', DATA_MODELS.scores.length);
     }, err => console.error('[realtime] scores listener error', err));
     window.realtimeUnsubscribers.push(unsubScores);
+
+    // EARLY ANGEL ENTRIES Listener (scoped to class + active year)
+    const activeYearId = getActiveAcademicYearId();
+    const earlyAngelEntriesQuery = activeYearId
+        ? query(
+            collection(db, 'earlyAngelEntries'),
+            where('classId', '==', userClassId),
+            where('academicYearId', '==', activeYearId)
+        )
+        : query(
+            collection(db, 'earlyAngelEntries'),
+            where('classId', '==', userClassId)
+        );
+
+    const unsubEarlyAngelEntries = onSnapshot(earlyAngelEntriesQuery, snapshot => {
+        DATA_MODELS.earlyAngelEntries = [];
+        snapshot.forEach(doc => {
+            const data = { id: doc.id, ...doc.data() };
+            if (isCurrentAcademicYear(data)) DATA_MODELS.earlyAngelEntries.push(data);
+        });
+        DATA_MODELS.earlyAngelEntries.sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+        renderEarlyAngelTables();
+        console.log('[realtime] earlyAngelEntries sync', DATA_MODELS.earlyAngelEntries.length);
+    }, err => console.error('[realtime] earlyAngelEntries listener error', err));
+    window.realtimeUnsubscribers.push(unsubEarlyAngelEntries);
+
+    // EARLY ANGEL LEADERBOARD Listener (scoped to class + active year)
+    const earlyAngelLeaderboardQuery = activeYearId
+        ? query(
+            collection(db, 'earlyAngelLeaderboard'),
+            where('classId', '==', userClassId),
+            where('academicYearId', '==', activeYearId)
+        )
+        : query(
+            collection(db, 'earlyAngelLeaderboard'),
+            where('classId', '==', userClassId)
+        );
+
+    const unsubEarlyAngelLeaderboard = onSnapshot(earlyAngelLeaderboardQuery, snapshot => {
+        DATA_MODELS.earlyAngelLeaderboard = [];
+        snapshot.forEach(doc => {
+            const data = { id: doc.id, ...doc.data() };
+            if (isCurrentAcademicYear(data)) DATA_MODELS.earlyAngelLeaderboard.push(data);
+        });
+        DATA_MODELS.earlyAngelLeaderboard.sort((a, b) => Number(b.totalPoints || 0) - Number(a.totalPoints || 0));
+        renderEarlyAngelTables();
+        console.log('[realtime] earlyAngelLeaderboard sync', DATA_MODELS.earlyAngelLeaderboard.length);
+    }, err => console.error('[realtime] earlyAngelLeaderboard listener error', err));
+    window.realtimeUnsubscribers.push(unsubEarlyAngelLeaderboard);
 }
 
 // -----------------
@@ -428,9 +613,21 @@ function startRealtimeListeners() {
  * This faculty-safe version does NOT query activityLogs.
  */
 async function renderDashboard() {
+    const activeYearId = getActiveAcademicYearId() || DATA_MODELS.appConfig?.activeAcademicYearId || null;
+    const activeYear = (DATA_MODELS.academicYears || []).find(year => String(year.id || '') === String(activeYearId || ''));
+    const activeYearLabel = activeYear ? (activeYear.label || activeYear.yearLabel || activeYear.id) : (activeYearId || 'Not set');
+    const activeYearEl = document.getElementById('faculty-active-year-label');
+    if (activeYearEl) activeYearEl.textContent = activeYearLabel;
+
+    const assignedClassEl = document.getElementById('faculty-assigned-class-label');
+    if (assignedClassEl) assignedClassEl.textContent = currentUserData?.classId || 'Unassigned';
+
+    const classRoster = getCurrentAcademicYearRoster(DATA_MODELS.students, DATA_MODELS.enrollments || [])
+        .filter(student => String(student.classId || '') === String(currentUserData?.classId || ''));
+
     const totalStudentsEl = document.getElementById('total-students');
     if (totalStudentsEl) {
-        totalStudentsEl.textContent = DATA_MODELS.students.length;
+        totalStudentsEl.textContent = classRoster.length;
     }
 
     const availableSessions = DATA_MODELS.sessions.filter(s => s.status === 'Available');
@@ -440,9 +637,9 @@ async function renderDashboard() {
     }
 
     // Calculate average attendance
-    if (DATA_MODELS.students.length > 0 && availableSessions.length > 0) {
+    if (classRoster.length > 0 && availableSessions.length > 0) {
         let totalAttendance = 0;
-        DATA_MODELS.students.forEach(student => {
+        classRoster.forEach(student => {
             const presentCount = DATA_MODELS.attendance.filter(a =>
                 (a.studentId === student.studentId) &&
                 (a.status === 'Present' || a.status === 'Late')
@@ -452,7 +649,7 @@ async function renderDashboard() {
             totalAttendance += percentage;
         });
 
-        const avgAttendance = Math.round(totalAttendance / DATA_MODELS.students.length);
+        const avgAttendance = Math.round(totalAttendance / classRoster.length);
         const avgAttendanceEl = document.getElementById('avg-attendance');
         if (avgAttendanceEl) {
             avgAttendanceEl.textContent = `${avgAttendance}%`;
@@ -491,18 +688,582 @@ async function renderDashboard() {
 // -----------------
 // 👨‍🎓 STUDENT MANAGEMENT
 // -----------------
+
+function requiresFacultyOnboarding(userData) {
+    const isCompleted = userData?.onboardingCompleted === true;
+    const version = Number(userData?.onboardingVersion || 0);
+    return !isCompleted || version < FACULTY_ONBOARDING_VERSION;
+}
+
+function populateFacultyOnboardingDetails(user, userData) {
+    const classIdEl = document.getElementById('onboarding-class-id');
+    const activeYearEl = document.getElementById('onboarding-active-year');
+    const migrationNoteEl = document.getElementById('onboarding-migration-note');
+    const displayNameInput = document.getElementById('onboarding-display-name');
+    const phoneInput = document.getElementById('onboarding-contact-phone');
+    const ackYear = document.getElementById('onboarding-ack-year');
+    const ackPolicy = document.getElementById('onboarding-ack-policy');
+
+    const classId = userData?.classId || currentUserData?.classId || 'Unassigned';
+    const activeYearId = YEAR_MIGRATION_STATE.activeYearId || getActiveAcademicYearId() || 'Not set';
+    const previousYearId = YEAR_MIGRATION_STATE.previousYearId;
+    const migrationEnabled = YEAR_MIGRATION_STATE.migrationEnabled;
+
+    if (classIdEl) classIdEl.textContent = classId;
+    if (activeYearEl) activeYearEl.textContent = activeYearId;
+
+    if (migrationNoteEl) {
+        if (!migrationEnabled) {
+            migrationNoteEl.textContent = 'Migration is currently disabled for this academic year.';
+        } else if (!previousYearId) {
+            migrationNoteEl.textContent = 'Migration is enabled, but previous year is not configured by admin yet.';
+        } else {
+            migrationNoteEl.textContent = `Migration available from ${previousYearId}. Use the Students tab migration panel if needed.`;
+        }
+    }
+
+    const defaultName = (user?.email || '').split('@')[0] || '';
+    if (displayNameInput) {
+        displayNameInput.value = userData?.displayName || defaultName;
+    }
+    if (phoneInput) {
+        phoneInput.value = userData?.phone || '';
+    }
+    if (ackYear) ackYear.checked = false;
+    if (ackPolicy) ackPolicy.checked = false;
+}
+
+async function maybeRunFacultyOnboarding(user, userData) {
+    if (!requiresFacultyOnboarding(userData)) return;
+
+    const modal = document.getElementById('faculty-onboarding-modal');
+    if (!modal) return;
+
+    await refreshYearMigrationState();
+    populateFacultyOnboardingDetails(user, userData);
+
+    hideSpinner();
+    modal.style.display = 'flex';
+
+    await new Promise(resolve => {
+        facultyOnboardingResolver = resolve;
+    });
+}
+
+async function completeFacultyOnboarding(e) {
+    e.preventDefault();
+
+    const modal = document.getElementById('faculty-onboarding-modal');
+    const displayName = document.getElementById('onboarding-display-name')?.value.trim() || '';
+    const phone = document.getElementById('onboarding-contact-phone')?.value.trim() || '';
+    const ackYear = !!document.getElementById('onboarding-ack-year')?.checked;
+    const ackPolicy = !!document.getElementById('onboarding-ack-policy')?.checked;
+    const uid = window.auth?.currentUser?.uid;
+
+    if (!displayName) {
+        return showError('Display name is required.');
+    }
+    if (!ackYear || !ackPolicy) {
+        return showError('Please acknowledge both onboarding checkboxes before continuing.');
+    }
+    if (!uid) {
+        return showError('Unable to complete onboarding. Please login again.');
+    }
+
+    showSpinner();
+    try {
+        const payload = {
+            displayName,
+            phone,
+            onboardingCompleted: true,
+            onboardingCompletedAt: new Date().toISOString(),
+            onboardingVersion: FACULTY_ONBOARDING_VERSION,
+            onboardingChecklist: {
+                activeYearReviewed: ackYear,
+                dataPolicyAcknowledged: ackPolicy,
+                activeAcademicYearId: YEAR_MIGRATION_STATE.activeYearId || null,
+            },
+            updatedAt: new Date().toISOString(),
+        };
+
+        await setDoc(doc(window.db, 'userRoles', uid), payload, { merge: true });
+
+        currentUserData = {
+            ...(currentUserData || {}),
+            ...payload,
+        };
+
+        if (modal) modal.style.display = 'none';
+        if (typeof facultyOnboardingResolver === 'function') {
+            facultyOnboardingResolver();
+            facultyOnboardingResolver = null;
+        }
+
+        createAuditLog('faculty_onboarding_completed', {
+            uid,
+            classId: currentUserData?.classId || null,
+            onboardingVersion: FACULTY_ONBOARDING_VERSION,
+        });
+
+        showSuccess('Onboarding complete', 'Your faculty setup is saved.');
+    } catch (err) {
+        showError('Failed to complete onboarding: ' + err.message);
+    } finally {
+        hideSpinner();
+    }
+}
+
+async function initializeYearMigrationPanel() {
+    await refreshYearMigrationState();
+    await loadYearMigrationCandidates();
+}
+
+async function refreshYearMigrationState() {
+    YEAR_MIGRATION_STATE.activeYearId = getActiveAcademicYearId() || null;
+    YEAR_MIGRATION_STATE.previousYearId = null;
+    YEAR_MIGRATION_STATE.migrationEnabled = false;
+
+    if (!window.db || !window.doc || !window.getDoc || !YEAR_MIGRATION_STATE.activeYearId) {
+        renderYearMigrationPanel();
+        return;
+    }
+
+    try {
+        const yearSnap = await getDoc(doc(window.db, 'academicYears', YEAR_MIGRATION_STATE.activeYearId));
+        if (yearSnap.exists()) {
+            const yearData = yearSnap.data() || {};
+            YEAR_MIGRATION_STATE.previousYearId = yearData.previousYearId || null;
+            YEAR_MIGRATION_STATE.migrationEnabled = !!yearData.migrationEnabled;
+        }
+    } catch (err) {
+        console.warn('Failed to load migration settings for active year:', err);
+    }
+
+    renderYearMigrationPanel();
+}
+
+function renderYearMigrationPanel() {
+    const statusEl = document.getElementById('year-migration-status');
+    const runBtn = document.getElementById('run-year-migration-btn');
+
+    if (!statusEl || !runBtn) return;
+
+    const classId = currentUserData?.classId || '';
+    const activeYearId = YEAR_MIGRATION_STATE.activeYearId;
+    const previousYearId = YEAR_MIGRATION_STATE.previousYearId;
+    const migrationEnabled = YEAR_MIGRATION_STATE.migrationEnabled;
+    const candidateCount = YEAR_MIGRATION_STATE.candidates.length;
+
+    if (!activeYearId) {
+        statusEl.textContent = 'No active academic year is configured yet.';
+        runBtn.disabled = true;
+        renderYearMigrationPreview();
+        return;
+    }
+
+    if (!migrationEnabled) {
+        statusEl.textContent = `Migration is disabled for active year ${activeYearId}. Ask admin to enable migration for this year.`;
+        runBtn.disabled = true;
+        renderYearMigrationPreview();
+        return;
+    }
+
+    if (!previousYearId) {
+        statusEl.textContent = `Active year ${activeYearId} has migration enabled, but no previous year is configured.`;
+        runBtn.disabled = true;
+        renderYearMigrationPreview();
+        return;
+    }
+
+    statusEl.textContent = `Class ${classId || 'N/A'} migration source: ${previousYearId}. Active year: ${activeYearId}. Ready candidates: ${candidateCount}.`;
+    runBtn.disabled = candidateCount === 0;
+    renderYearMigrationPreview();
+}
+
+function renderYearMigrationPreview() {
+    const previewEl = document.getElementById('year-migration-preview');
+    if (!previewEl) return;
+
+    const migrationEnabled = YEAR_MIGRATION_STATE.migrationEnabled;
+    const previousYearId = YEAR_MIGRATION_STATE.previousYearId;
+    const activeYearId = YEAR_MIGRATION_STATE.activeYearId;
+    const rows = YEAR_MIGRATION_STATE.candidates;
+
+    if (!activeYearId || !migrationEnabled || !previousYearId) {
+        previewEl.innerHTML = '<p>Migration preview will appear here when migration is enabled and previous year is configured.</p>';
+        return;
+    }
+
+    if (rows.length === 0) {
+        previewEl.innerHTML = `<p>No eligible students found in ${escapeHtml(previousYearId)} for migration.</p>`;
+        return;
+    }
+
+    const previewRows = rows.slice(0, 15);
+    previewEl.innerHTML = `
+        <p><strong>${rows.length}</strong> students are eligible for migration from ${escapeHtml(previousYearId)} to ${escapeHtml(activeYearId)}.</p>
+        <table class="data-table simple">
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Name</th>
+                    <th>Guardian</th>
+                    <th>Contact</th>
+                </tr>
+            </thead>
+            <tbody>
+                ${previewRows.map(s => `
+                    <tr>
+                        <td>${escapeHtml(s.studentId || s.id || '')}</td>
+                        <td>${escapeHtml((s.firstName || '') + ' ' + (s.lastName || ''))}</td>
+                        <td>${escapeHtml(s.guardian || '-')}</td>
+                        <td>${escapeHtml(s.phone || s.email || '-')}</td>
+                    </tr>
+                `).join('')}
+                ${rows.length > 15 ? `<tr><td colspan="4">... and ${rows.length - 15} more students</td></tr>` : ''}
+            </tbody>
+        </table>
+    `;
+}
+
+async function loadYearMigrationCandidates() {
+    YEAR_MIGRATION_STATE.candidates = [];
+
+    const classId = currentUserData?.classId || '';
+    if (!window.db || !window.collection || !window.query || !window.where || !window.getDocs || !classId) {
+        renderYearMigrationPanel();
+        return;
+    }
+
+    await refreshYearMigrationState();
+    if (!YEAR_MIGRATION_STATE.migrationEnabled || !YEAR_MIGRATION_STATE.previousYearId || !YEAR_MIGRATION_STATE.activeYearId) {
+        renderYearMigrationPanel();
+        return;
+    }
+
+    try {
+        const previousYearQuery = query(
+            collection(window.db, 'students'),
+            where('classId', '==', classId),
+            where('academicYearId', '==', YEAR_MIGRATION_STATE.previousYearId)
+        );
+        const activeYearQuery = query(
+            collection(window.db, 'students'),
+            where('classId', '==', classId),
+            where('academicYearId', '==', YEAR_MIGRATION_STATE.activeYearId)
+        );
+
+        const [previousSnap, activeSnap] = await Promise.all([
+            getDocs(previousYearQuery),
+            getDocs(activeYearQuery)
+        ]);
+
+        const activeStudentIds = new Set(
+            activeSnap.docs.map(d => String(d.data()?.studentId || d.id))
+        );
+
+        const candidates = [];
+        previousSnap.forEach(docSnap => {
+            const student = docSnap.data() || {};
+            const studentId = String(student.studentId || docSnap.id);
+            if (!activeStudentIds.has(studentId)) {
+                candidates.push({ ...student, id: studentId, studentId });
+            }
+        });
+
+        YEAR_MIGRATION_STATE.candidates = candidates.sort((a, b) =>
+            String(a.studentId || '').localeCompare(String(b.studentId || ''), undefined, { numeric: true })
+        );
+    } catch (err) {
+        console.error('Failed to load migration candidates:', err);
+        showError('Failed to load migration preview: ' + err.message);
+    }
+
+    renderYearMigrationPanel();
+}
+
+async function runYearMigration() {
+    const classId = currentUserData?.classId || '';
+    const candidates = YEAR_MIGRATION_STATE.candidates || [];
+    const activeYearId = YEAR_MIGRATION_STATE.activeYearId;
+    const previousYearId = YEAR_MIGRATION_STATE.previousYearId;
+
+    if (!YEAR_MIGRATION_STATE.migrationEnabled || !activeYearId || !previousYearId) {
+        return showError('Migration is not enabled or year settings are incomplete.');
+    }
+    if (!classId) {
+        return showError('Faculty class is not configured. Contact admin.');
+    }
+    if (candidates.length === 0) {
+        return showError('No students available to migrate.');
+    }
+
+    const result = await showConfirmWithInput(
+        'Run Academic Year Migration?',
+        `This will copy ${candidates.length} students from ${previousYearId} to ${activeYearId} for class ${classId}. Type "MIGRATE" to continue.`,
+        'MIGRATE'
+    );
+    if (result.value !== 'MIGRATE') return showSuccess('Migration canceled.');
+
+    showSpinner();
+    try {
+        const writePromises = candidates.map(async sourceStudent => {
+            const studentPayload = withAcademicYear({
+                studentId: String(sourceStudent.studentId || sourceStudent.id || ''),
+                firstName: sourceStudent.firstName || '',
+                lastName: sourceStudent.lastName || '',
+                dob: sourceStudent.dob || '',
+                guardian: sourceStudent.guardian || '',
+                phone: sourceStudent.phone || '',
+                email: sourceStudent.email || '',
+                notes: sourceStudent.notes || '',
+                classId,
+                migratedFromYear: previousYearId,
+                migratedAt: new Date().toISOString(),
+                migratedBy: currentUserData?.uid || 'faculty'
+            });
+
+            const studentRef = doc(window.db, 'students', String(studentPayload.studentId));
+            await setDoc(studentRef, studentPayload, { merge: true });
+            await upsertEnrollmentForStudent(studentPayload, currentUserData?.uid || 'faculty');
+        });
+
+        await Promise.all(writePromises);
+
+        createAuditLog('faculty_academic_year_migration', {
+            classId,
+            fromYear: previousYearId,
+            toYear: activeYearId,
+            migratedCount: candidates.length
+        });
+
+        await loadYearMigrationCandidates();
+        showSuccess(`Migration complete. ${candidates.length} students copied to ${activeYearId}.`);
+    } catch (err) {
+        showError('Migration failed: ' + err.message);
+    } finally {
+        hideSpinner();
+    }
+}
+
+function getEarlyAngelActiveYearId() {
+    return getActiveAcademicYearId() || YEAR_MIGRATION_STATE.activeYearId || null;
+}
+
+function renderEarlyAngelStudentSelectors() {
+    const entrySelect = document.getElementById('early-angel-student-select');
+    const filterSelect = document.getElementById('early-angel-student-filter');
+    if (!entrySelect && !filterSelect) return;
+
+    const students = [...(DATA_MODELS.students || [])].sort((a, b) =>
+        String(a.studentId || '').localeCompare(String(b.studentId || ''), undefined, { numeric: true })
+    );
+
+    if (entrySelect) {
+        const currentValue = entrySelect.value;
+        entrySelect.innerHTML = '<option value="">-- Select a student --</option>';
+        students.forEach(student => {
+            const option = document.createElement('option');
+            option.value = String(student.studentId || '');
+            option.textContent = `${student.studentId} - ${student.firstName || ''} ${student.lastName || ''}`.trim();
+            entrySelect.appendChild(option);
+        });
+        if (currentValue && students.some(s => String(s.studentId) === currentValue)) {
+            entrySelect.value = currentValue;
+        }
+    }
+
+    if (filterSelect) {
+        const currentValue = filterSelect.value;
+        filterSelect.innerHTML = '<option value="">-- All students --</option>';
+        students.forEach(student => {
+            const option = document.createElement('option');
+            option.value = String(student.studentId || '');
+            option.textContent = `${student.studentId} - ${student.firstName || ''} ${student.lastName || ''}`.trim();
+            filterSelect.appendChild(option);
+        });
+        if (currentValue && students.some(s => String(s.studentId) === currentValue)) {
+            filterSelect.value = currentValue;
+        }
+    }
+}
+
+function renderEarlyAngelTables() {
+    renderEarlyAngelLeaderboardTable();
+    renderEarlyAngelEntriesTable();
+}
+
+function toggleEarlyAngelPanel(show) {
+    const panel = document.getElementById('early-angel-panel');
+    if (!panel) return;
+
+    panel.classList.toggle('is-hidden', !show);
+    if (show) {
+        renderEarlyAngelStudentSelectors();
+        renderEarlyAngelTables();
+        panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+}
+
+function renderEarlyAngelLeaderboardTable() {
+    const tbody = document.querySelector('#early-angel-leaderboard-table tbody');
+    if (!tbody) return;
+
+    const studentFilter = document.getElementById('early-angel-student-filter')?.value || '';
+    const rows = (DATA_MODELS.earlyAngelLeaderboard || []).filter(item => !studentFilter || String(item.studentId) === studentFilter);
+
+    tbody.innerHTML = '';
+    if (rows.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="4">No leaderboard entries yet.</td></tr>';
+        return;
+    }
+
+    rows.forEach((row, index) => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+            <td>${index + 1}</td>
+            <td>${escapeHtml(row.studentName || row.studentId || '-')}</td>
+            <td><strong>${Number(row.totalPoints || 0)}</strong></td>
+            <td>${Number(row.entryCount || 0)}</td>
+        `;
+        tbody.appendChild(tr);
+    });
+}
+
+function renderEarlyAngelEntriesTable() {
+    const tbody = document.querySelector('#early-angel-entries-table tbody');
+    if (!tbody) return;
+
+    const studentFilter = document.getElementById('early-angel-student-filter')?.value || '';
+    const rows = (DATA_MODELS.earlyAngelEntries || []).filter(item => !studentFilter || String(item.studentId) === studentFilter);
+
+    tbody.innerHTML = '';
+    if (rows.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="5">No Early Angel entries yet.</td></tr>';
+        return;
+    }
+
+    rows.slice(0, 100).forEach(row => {
+        const tr = document.createElement('tr');
+        const dateLabel = row.entryDate ? formatDate(row.entryDate) : formatDate((row.createdAt || '').slice(0, 10));
+        tr.innerHTML = `
+            <td>${escapeHtml(dateLabel)}</td>
+            <td>${escapeHtml(row.studentName || row.studentId || '-')}</td>
+            <td>${escapeHtml(row.category || '-')}</td>
+            <td>${Number(row.points || 0)}</td>
+            <td>${escapeHtml(row.notes || '-')}</td>
+        `;
+        tbody.appendChild(tr);
+    });
+}
+
+async function saveEarlyAngelEntry(e) {
+    e.preventDefault();
+
+    const studentId = (document.getElementById('early-angel-student-select')?.value || '').trim();
+    const points = Number(document.getElementById('early-angel-points')?.value || 0);
+    const category = (document.getElementById('early-angel-category')?.value || 'Other').trim();
+    const entryDate = document.getElementById('early-angel-date')?.value || new Date().toISOString().slice(0, 10);
+    const notes = (document.getElementById('early-angel-notes')?.value || '').trim();
+
+    const activeYearId = getEarlyAngelActiveYearId();
+    const classId = currentUserData?.classId || '';
+
+    if (!studentId) return showError('Please select a student.');
+    if (!Number.isFinite(points) || points <= 0) return showError('Points must be a positive number.');
+    if (!entryDate) return showError('Entry date is required.');
+    if (!classId) return showError('Faculty class is not configured. Contact admin.');
+    if (!activeYearId) return showError('Active academic year is not configured. Contact admin.');
+
+    const student = DATA_MODELS.students.find(s => String(s.studentId) === studentId);
+    if (!student) return showError('Selected student is not available in this class/year.');
+
+    const studentName = `${student.firstName || ''} ${student.lastName || ''}`.trim() || studentId;
+    const nowIso = new Date().toISOString();
+
+    showSpinner();
+    try {
+        const entryPayload = withAcademicYear({
+            studentId,
+            studentName,
+            classId,
+            category,
+            points,
+            notes,
+            entryDate,
+            createdAt: nowIso,
+            createdBy: currentUserData?.uid || 'faculty'
+        });
+
+        await addDoc(collection(window.db, 'earlyAngelEntries'), entryPayload);
+
+        const summaryDocId = `${activeYearId}_${classId}_${entryDate}_${studentId}`;
+        await setDoc(doc(window.db, 'earlyAngelDailySummary', summaryDocId), withAcademicYear({
+            classId,
+            date: entryDate,
+            studentId,
+            studentName,
+            pointsTotal: window.increment(points),
+            entryCount: window.increment(1),
+            lastUpdatedAt: nowIso,
+            updatedBy: currentUserData?.uid || 'faculty'
+        }), { merge: true });
+
+        const leaderboardDocId = `${activeYearId}_${classId}_${studentId}`;
+        await setDoc(doc(window.db, 'earlyAngelLeaderboard', leaderboardDocId), withAcademicYear({
+            classId,
+            studentId,
+            studentName,
+            totalPoints: window.increment(points),
+            entryCount: window.increment(1),
+            lastEntryDate: entryDate,
+            lastUpdatedAt: nowIso,
+            updatedBy: currentUserData?.uid || 'faculty'
+        }), { merge: true });
+
+        createAuditLog('early_angel_entry_saved', {
+            classId,
+            studentId,
+            points,
+            category,
+            academicYearId: activeYearId
+        });
+
+        showSuccess('Early Angel entry saved.');
+        document.getElementById('early-angel-entry-form')?.reset();
+        const dateInput = document.getElementById('early-angel-date');
+        if (dateInput) dateInput.value = entryDate;
+        const pointsInput = document.getElementById('early-angel-points');
+        if (pointsInput) pointsInput.value = '1';
+    } catch (err) {
+        showError('Failed to save Early Angel entry: ' + err.message);
+    } finally {
+        hideSpinner();
+    }
+}
+
 function renderStudentsTable() {
     const tbody = document.querySelector('#students-table tbody');
     if (!tbody) return;
 
     const filterText = document.getElementById('student-search')?.value.toLowerCase() || '';
-    const filteredStudents = DATA_MODELS.students.filter(student => {
+    const classId = String(currentUserData?.classId || '').trim();
+    const rosterStudents = getCurrentAcademicYearRoster(DATA_MODELS.students, DATA_MODELS.enrollments || [])
+        .filter(student => !classId || String(student.classId || '') === classId);
+    const filteredStudents = rosterStudents.filter(student => {
         if (!filterText) return true;
-        // Use escapeHtml to prevent XSS in the search functionality if it were displayed
-        return student.firstName.toLowerCase().includes(filterText) ||
-            student.lastName.toLowerCase().includes(filterText) ||
-            student.studentId.toLowerCase().includes(filterText) ||
-            (student.guardian && student.guardian.toLowerCase().includes(filterText));
+        const searchText = [
+            student.firstName,
+            student.lastName,
+            student.fullName,
+            student.studentId,
+            student.guardian,
+            student.phone,
+            student.email,
+            student.classId,
+            student.registerNo
+        ].filter(Boolean).join(' ').toLowerCase();
+        return searchText.includes(filterText);
     });
 
     tbody.innerHTML = ''; // Clear table
@@ -575,6 +1336,7 @@ async function saveStudent() {
         // Persist to Firestore
         const studentRef = doc(window.db, 'students', String(student.studentId));
         await setDoc(studentRef, student, { merge: true }); // Use merge to be safe
+        await upsertEnrollmentForStudent(student, currentUserData?.uid || 'faculty');
 
         const action = id ? 'student_updated' : 'student_created';
         createAuditLog(action, { studentId: student.studentId, name: `${student.firstName} ${student.lastName}` });
@@ -590,7 +1352,9 @@ async function saveStudent() {
 }
 
 function editStudent(studentId) {
-    const student = DATA_MODELS.students.find(s => s.studentId === studentId);
+    const rosterStudent = getCurrentAcademicYearRoster(DATA_MODELS.students, DATA_MODELS.enrollments || [])
+        .find(s => String(s.studentId) === String(studentId));
+    const student = rosterStudent;
     if (student) {
         document.getElementById('student-id').value = student.studentId; // Set hidden ID
         document.getElementById('student-id-input').value = student.studentId;
@@ -629,7 +1393,8 @@ async function deleteStudent(studentId) {
 }
 
 function viewStudentDetails(studentId) {
-    const student = DATA_MODELS.students.find(s => s.studentId === studentId);
+    const student = getCurrentAcademicYearRoster(DATA_MODELS.students, DATA_MODELS.enrollments || [])
+        .find(s => String(s.studentId) === String(studentId));
     if (!student) return showError('Student not found.');
 
     const detailsHtml = `
@@ -714,18 +1479,19 @@ async function saveSession() {
     const date = document.getElementById('session-date-input').value;
     const status = document.getElementById('session-status').value;
     const noClassReason = (status === 'NoClass') ? document.getElementById('noclass-reason').value : null;
+    const sessionId = date;
 
     if (!date) return showError('Please select a date');
 
-    if (DATA_MODELS.sessions.some(s => s.date === date)) {
+    if (DATA_MODELS.sessions.some(s => s.id === sessionId || s.date === date)) {
         return showError('A session already exists for this date');
     }
 
-    const session = {
-        id: generateId(), // From common.js
+    const session = withAcademicYear({
+        id: sessionId,
         date, status, noClassReason,
         createdAt: new Date().toISOString(),
-    };
+    });
 
     showSpinner();
     try {
@@ -800,9 +1566,11 @@ function renderAttendanceForm(sessionId) {
             <tbody>`;
 
     // Sort students by ID for taking attendance too
-    const sortedStudents = [...DATA_MODELS.students].sort((a, b) =>
-        String(a.studentId).localeCompare(String(b.studentId), undefined, { numeric: true })
-    );
+    const sortedStudents = getCurrentAcademicYearRoster(DATA_MODELS.students, DATA_MODELS.enrollments || [])
+        .filter(student => String(student.classId || '') === String(currentUserData.classId || ''))
+        .sort((a, b) =>
+            String(a.studentId).localeCompare(String(b.studentId), undefined, { numeric: true })
+        );
 
     sortedStudents.forEach(student => {
         const existing = DATA_MODELS.attendance.find(a => a.sessionId === sessionId && a.studentId === student.studentId);
@@ -846,11 +1614,11 @@ window.saveAttendance = async (sessionId) => {
             const studentId = select.dataset.student;
             const status = select.value;
 
-            const attendanceObj = {
+            const attendanceObj = withAcademicYear({
                 sessionId, studentId, status,
                 updatedAt: new Date().toISOString(),
                 classId: classId, // Faculty uses their own class ID
-            };
+            });
             const docId = `${sessionId}_${studentId}`;
             const docRef = doc(window.db, 'attendance', docId);
             promises.push(setDoc(docRef, attendanceObj, { merge: true }));
@@ -885,7 +1653,8 @@ function renderAssessmentsTable() {
 
         // Calculate total students for that class
         // (Faculty logic handles this automatically via scoped DATA_MODELS)
-        const totalStudents = DATA_MODELS.students.filter(s => s.classId === assessment.classId).length;
+        const totalStudents = getCurrentAcademicYearRoster(DATA_MODELS.students, DATA_MODELS.enrollments || [])
+            .filter(s => String(s.classId || '') === String(assessment.classId || '')).length;
 
         const row = document.createElement('tr');
         row.innerHTML = `
@@ -937,10 +1706,10 @@ async function saveAssessment() {
         return showError('Please fill in all required fields.');
     }
 
-    const assessment = {
+    const assessment = withAcademicYear({
         id: generateId(),
         name, date, totalMarks, classId
-    };
+    });
 
     showSpinner();
     try {
@@ -968,8 +1737,22 @@ async function deleteAssessment(assessmentId) {
         try {
             const docRef = doc(window.db, 'assessments', assessmentId);
             await deleteDoc(docRef);
-            // TODO: Delete all scores associated with this assessment (batched delete)
-            createAuditLog('assessment_deleted', { assessmentId: assessmentId, name: assessment?.name });
+            // Batched delete all related scores
+            const { doc, query, collection, where, getDocs, writeBatch } = window;
+            const db = window.db;
+            const scoreBatch = writeBatch(db);
+            const scoresQ = query(collection(db, 'scores'), where('assessmentId', '==', assessmentId));
+            const scoresSnap = await getDocs(scoresQ);
+            scoresSnap.forEach(scoreDoc => {
+                scoreBatch.delete(scoreDoc.ref);
+            });
+            await scoreBatch.commit();
+
+            createAuditLog('assessment_deleted', {
+                assessmentId: assessmentId,
+                name: assessment?.name,
+                deletedScoresCount: scoresSnap.size
+            });
             showSuccess('Assessment deleted.');
         } catch (err) {
             showError('Failed to delete assessment: ' + err.message);
@@ -1035,11 +1818,11 @@ async function saveScores() {
                 return showError(`Invalid score for ${studentId}: ${marksStr}. Must be between 0 and ${assessment.totalMarks}.`);
             }
         }
-        toWrite.push({
+        toWrite.push(withAcademicYear({
             assessmentId, studentId, marks,
             updatedAt: new Date().toISOString(),
             classId: classId
-        });
+        }));
     }
 
     showSpinner();
@@ -1065,11 +1848,14 @@ async function saveScores() {
 // 📜 REPORT GENERATION
 // -----------------
 function updateReportDropdown() {
-    populateDropdown('report-student', DATA_MODELS.students, s => s.studentId, s => `${s.firstName} ${s.lastName} (${s.studentId})`);
+    const classRoster = getCurrentAcademicYearRoster(DATA_MODELS.students, DATA_MODELS.enrollments || [])
+        .filter(student => String(student.classId || '') === String(currentUserData?.classId || ''));
+    populateDropdown('report-student', classRoster, s => s.studentId, s => `${s.firstName} ${s.lastName} (${s.studentId})`);
 }
 
 function generateStudentReport(studentId) {
-    const student = DATA_MODELS.students.find(s => s.studentId === studentId);
+    const student = getCurrentAcademicYearRoster(DATA_MODELS.students, DATA_MODELS.enrollments || [])
+        .find(s => String(s.studentId) === String(studentId) && String(s.classId || '') === String(currentUserData?.classId || ''));
     if (!student) return;
 
     const container = document.getElementById('report-content');
@@ -1170,9 +1956,11 @@ function generateOverallAttendanceReport() {
         .filter(s => s.status === 'Available')
         .sort((a, b) => new Date(a.date) - new Date(b.date));
 
-    const students = [...DATA_MODELS.students].sort((a, b) =>
-        String(a.studentId).localeCompare(String(b.studentId), undefined, { numeric: true })
-    );
+    const students = getCurrentAcademicYearRoster(DATA_MODELS.students, DATA_MODELS.enrollments || [])
+        .filter(s => String(s.classId || '') === String(currentUserData?.classId || ''))
+        .sort((a, b) =>
+            String(a.studentId).localeCompare(String(b.studentId), undefined, { numeric: true })
+        );
 
     if (sessions.length === 0 || students.length === 0) {
         container.innerHTML = '<p>No data available.</p>';
@@ -1300,9 +2088,11 @@ function exportAttendanceToCsv() {
     csvContent += ",Total Present,Total Sessions,Percentage\n";
 
     // 2. Sort Students
-    const students = [...DATA_MODELS.students].sort((a, b) =>
-        String(a.studentId).localeCompare(String(b.studentId), undefined, { numeric: true })
-    );
+    const students = getCurrentAcademicYearRoster(DATA_MODELS.students, DATA_MODELS.enrollments || [])
+        .filter(student => String(student.classId || '') === String(currentUserData.classId || ''))
+        .sort((a, b) =>
+            String(a.studentId).localeCompare(String(b.studentId), undefined, { numeric: true })
+        );
 
     // 3. Build Data Rows
     students.forEach(student => {
@@ -1351,11 +2141,11 @@ window.saveAttendance = async (sessionId) => {
             const studentId = select.dataset.student;
             const status = select.value;
 
-            const attendanceObj = {
+            const attendanceObj = withAcademicYear({
                 sessionId, studentId, status,
                 updatedAt: new Date().toISOString(),
                 classId: classId, // Faculty uses their own class ID
-            };
+            });
             const docId = `${sessionId}_${studentId}`;
             const docRef = doc(window.db, 'attendance', docId);
             promises.push(setDoc(docRef, attendanceObj, { merge: true }));
@@ -1459,9 +2249,11 @@ async function importCSV() {
     showSpinner();
     try {
         const { doc, setDoc } = window;
-        const promises = studentsToImport.map(student => {
+        const promises = studentsToImport.map(async student => {
+            const yearStudent = withAcademicYear(student);
             const studentRef = doc(window.db, 'students', String(student.studentId));
-            return setDoc(studentRef, student);
+            await setDoc(studentRef, yearStudent, { merge: true });
+            await upsertEnrollmentForStudent(yearStudent, currentUserData?.uid || 'faculty');
         });
         await Promise.all(promises);
         document.getElementById('import-modal').style.display = 'none';
@@ -1535,9 +2327,11 @@ function generateDaywiseAttendanceReport() {
     }
 
     // Get students (Faculty view is already scoped to their class)
-    const allStudents = [...DATA_MODELS.students].sort((a, b) =>
-        a.lastName.localeCompare(b.lastName) || a.firstName.localeCompare(b.firstName)
-    );
+    const allStudents = getCurrentAcademicYearRoster(DATA_MODELS.students, DATA_MODELS.enrollments || [])
+        .filter(student => String(student.classId || '') === String(currentUserData.classId || ''))
+        .sort((a, b) =>
+            a.lastName.localeCompare(b.lastName) || a.firstName.localeCompare(b.firstName)
+        );
 
     // 1. Separate students into two buckets
     const presentStudents = [];
@@ -1641,7 +2435,8 @@ function viewAssessmentReport(assessmentId) {
     // 3. Filter Data (Admin/Faculty agnostic logic)
     // Faculty users already have a filtered DATA_MODELS.students, Admin has all.
     // This filter works for both.
-    const students = DATA_MODELS.students.filter(s => s.classId === assessment.classId)
+    const students = getCurrentAcademicYearRoster(DATA_MODELS.students, DATA_MODELS.enrollments || [])
+        .filter(s => String(s.classId || '') === String(assessment.classId || ''))
         .sort((a, b) => String(a.studentId).localeCompare(String(b.studentId), undefined, { numeric: true }));
 
     const scores = DATA_MODELS.scores.filter(s => s.assessmentId === assessmentId);
@@ -1760,7 +2555,8 @@ function exportAssessmentToCsv(assessmentId) {
     const assessment = DATA_MODELS.assessments.find(a => a.id === assessmentId);
     if (!assessment) return;
 
-    const students = DATA_MODELS.students.filter(s => s.classId === assessment.classId)
+    const students = getCurrentAcademicYearRoster(DATA_MODELS.students, DATA_MODELS.enrollments || [])
+        .filter(s => String(s.classId || '') === String(assessment.classId || ''))
         .sort((a, b) => String(a.studentId).localeCompare(String(b.studentId), undefined, { numeric: true }));
     const scores = DATA_MODELS.scores.filter(s => s.assessmentId === assessmentId);
 
@@ -1789,3 +2585,334 @@ window.closeAssessmentReport = function () {
     if (reportView) reportView.style.display = 'none';
     if (listView) listView.style.display = 'block';
 };
+
+// -----------------------------------------------------------
+// PHASE 2: FACULTY MIGRATION WIZARD
+// -----------------------------------------------------------
+
+/**
+ * Initialize migration card visibility and populate migration preview
+ */
+async function initializeFacultyMigrationCard() {
+    const card = document.getElementById('year-migration-card');
+    if (!card) return;
+
+    const activeYearId = getActiveAcademicYearId();
+    const activeYear = (DATA_MODELS.academicYears || []).find(y => y.id === activeYearId);
+
+    if (!activeYear || !activeYear.migrationEnabled || !activeYear.previousYearId) {
+        // Migration is not enabled for this year
+        const statusEl = document.getElementById('year-migration-status');
+        if (statusEl) {
+            statusEl.innerHTML = '<p style="color: var(--text-color-light);">Academic year migration is currently <strong>disabled</strong> by admin.</p>';
+        }
+        const previewBtn = document.getElementById('preview-year-migration-btn');
+        const runBtn = document.getElementById('run-year-migration-btn');
+        if (previewBtn) previewBtn.disabled = true;
+        if (runBtn) runBtn.disabled = true;
+        return;
+    }
+
+    // Migration is enabled - show options
+    const statusEl = document.getElementById('year-migration-status');
+    if (statusEl) {
+        const prevYear = (DATA_MODELS.academicYears || []).find(y => y.id === activeYear.previousYearId);
+        statusEl.innerHTML = `<p style="color: var(--success); font-weight: 500;"><i class="fas fa-check-circle"></i> Migration enabled from <strong>${prevYear?.label || activeYear.previousYearId}</strong></p>`;
+    }
+
+    const previewBtn = document.getElementById('preview-year-migration-btn');
+    const runBtn = document.getElementById('run-year-migration-btn');
+    if (previewBtn) previewBtn.disabled = false;
+    if (runBtn) runBtn.disabled = false;
+
+    // Wire up button listeners
+    if (previewBtn && !previewBtn.dataset.listenerWired) {
+        previewBtn.addEventListener('click', previewYearMigration);
+        previewBtn.dataset.listenerWired = 'true';
+    }
+    if (runBtn && !runBtn.dataset.listenerWired) {
+        runBtn.addEventListener('click', runYearMigration);
+        runBtn.dataset.listenerWired = 'true';
+    }
+
+    // Load initial preview
+    await previewYearMigration();
+}
+
+/**
+ * PHASE 2: Preview students from previous year
+ */
+async function previewYearMigration() {
+    const activeYearId = getActiveAcademicYearId();
+    const activeYear = (DATA_MODELS.academicYears || []).find(y => y.id === activeYearId);
+
+    if (!activeYear || !activeYear.previousYearId) {
+        showError('Migration not configured for this year.');
+        return;
+    }
+
+    const previewContainer = document.getElementById('year-migration-preview');
+    if (!previewContainer) return;
+
+    previewContainer.innerHTML = '<p>Loading previous year students...</p>';
+
+    try {
+        // Query enrollments from previous year for THIS faculty's class
+        const previousYearEnrollments = await fetchEnrollmentsForClass(activeYear.previousYearId, currentUserData.classId);
+
+        if (previousYearEnrollments.length === 0) {
+            previewContainer.innerHTML = '<p style="color: var(--text-color-light);">No students found from previous year for your class.</p>';
+            return;
+        }
+
+        // Check for duplicates in current year
+        const currentEnrollments = DATA_MODELS.enrollments || [];
+        const duplicateStudentIds = new Set();
+        previousYearEnrollments.forEach(prevEnroll => {
+            if (currentEnrollments.some(curr => curr.studentId === prevEnroll.studentId && curr.academicYearId === activeYearId)) {
+                duplicateStudentIds.add(prevEnroll.studentId);
+            }
+        });
+
+        let html = `<h5>Previous Year Roster (${previousYearEnrollments.length} students)</h5>`;
+        if (duplicateStudentIds.size > 0) {
+            html += `<p style="color: var(--warning);"><i class="fas fa-exclamation-triangle"></i> <strong>${duplicateStudentIds.size}</strong> student(s) already exist in this year and will be skipped.</p>`;
+        }
+
+        html += '<table class="data-table simple"><thead><tr><th>Reg #</th><th>Student ID</th><th>Name</th><th>Status</th></tr></thead><tbody>';
+
+        previousYearEnrollments.forEach(enroll => {
+            const student = (DATA_MODELS.students || []).find(s => s.studentId === enroll.studentId);
+            const isDuplicate = duplicateStudentIds.has(enroll.studentId);
+            const statusClass = isDuplicate ? 'text-warning' : 'text-success';
+            const statusText = isDuplicate ? 'SKIP (exists)' : 'Ready to migrate';
+
+            html += `<tr>
+                <td>${enroll.registerNo}</td>
+                <td>${enroll.studentId}</td>
+                <td>${student ? `${student.firstName} ${student.lastName}` : '(not found)'}</td>
+                <td class="${statusClass}"><small>${statusText}</small></td>
+            </tr>`;
+        });
+
+        html += '</tbody></table>';
+        previewContainer.innerHTML = html;
+
+        // Store preview data for migration
+        window.migrationPreviewData = {
+            previousYearEnrollments,
+            duplicateStudentIds,
+            activeYearId,
+            previousYearId: activeYear.previousYearId
+        };
+
+    } catch (err) {
+        console.error('Migration preview error:', err);
+        previewContainer.innerHTML = `<p class="text-danger">Error loading previous year data: ${err.message}</p>`;
+    }
+}
+
+/**
+ * PHASE 2: Execute migration - import students from previous year
+ */
+async function runYearMigration() {
+    if (!window.migrationPreviewData) {
+        return showError('Please refresh preview first.');
+    }
+
+    const { previousYearEnrollments, duplicateStudentIds, activeYearId, previousYearId } = window.migrationPreviewData;
+
+    const studentsToMigrate = previousYearEnrollments.filter(enroll => !duplicateStudentIds.has(enroll.studentId));
+
+    if (studentsToMigrate.length === 0) {
+        return showError('All students in previous year are already enrolled in current year.');
+    }
+
+    const result = await showConfirm(
+        `Migrate ${studentsToMigrate.length} Student${studentsToMigrate.length !== 1 ? 's' : ''}?`,
+        `This will import ${studentsToMigrate.length} student(s) from previous year to current year. Existing students will be skipped.`
+    );
+
+    if (!result.isConfirmed) return;
+
+    showSpinner('Migrating students...');
+    try {
+        let migratedCount = 0;
+
+        for (const prevEnroll of studentsToMigrate) {
+            // Get student data from previous year
+            const student = (DATA_MODELS.students || []).find(s => s.studentId === prevEnroll.studentId);
+            if (!student) continue;
+
+            // Create new enrollment for current year with auto register number
+            const newEnrollment = await createOrUpdateEnrollment(
+                activeYearId,
+                currentUserData.classId,
+                student.studentId,
+                { migratedFromYearId: previousYearId }
+            );
+
+            if (newEnrollment) {
+                migratedCount++;
+                console.log(`Migrated: ${student.studentId} -> Register #${newEnrollment.registerNo}`);
+            }
+        }
+
+        createAuditLog('year_migration_completed', {
+            activeYearId,
+            previousYearId,
+            migratedCount,
+            classId: currentUserData.classId
+        });
+
+        await initializeFacultyMigrationCard();
+        showSuccess('Migration Complete!', `Successfully imported ${migratedCount} student(s) to current year.`);
+
+    } catch (err) {
+        console.error('Migration error:', err);
+        showError('Migration failed: ' + err.message);
+    } finally {
+        hideSpinner();
+    }
+}
+
+// -----------------------------------------------------------
+// PHASE 3: STUDENT QUICK ONBOARDING
+// -----------------------------------------------------------
+
+/**
+ * Initialize quick onboarding modal - auto-generate register number when modal opens
+ */
+function initializeQuickOnboarding() {
+    const btn = document.getElementById('quick-onboard-btn');
+    if (!btn) return;
+
+    btn.addEventListener('click', async () => {
+        // Clear form
+        document.getElementById('quick-onboard-form').reset();
+
+        // Auto-generate register number for current class/year
+        const regNo = await generateNextRegisterNumber();
+        document.getElementById('qo-register-no').value = regNo || '(Will be auto-assigned)';
+    });
+}
+
+/**
+ * Generate next register number for faculty's class in active academic year
+ */
+async function generateNextRegisterNumber() {
+    const activeYearId = getActiveAcademicYearId();
+    const classId = currentUserData?.classId;
+
+    if (!activeYearId || !classId) return null;
+
+    try {
+        // Query existing enrollments to find max register number
+        const enrollments = (DATA_MODELS.enrollments || []).filter(
+            e => e.academicYearId === activeYearId && e.classId === classId
+        );
+
+        if (enrollments.length === 0) return '1';
+
+        // Get max register number and increment
+        const maxRegNo = Math.max(...enrollments.map(e => parseInt(e.registerNo) || 0));
+        return String(maxRegNo + 1);
+    } catch (err) {
+        console.error('Error generating register number:', err);
+        return null;
+    }
+}
+
+/**
+ * Submit quick onboarding form - create student and enrollment
+ */
+async function submitQuickOnboarding() {
+    const form = document.getElementById('quick-onboard-form');
+    if (!form.checkValidity()) {
+        return showError('Please fill in all required fields.');
+    }
+
+    const firstName = document.getElementById('qo-first-name').value.trim();
+    const lastName = document.getElementById('qo-last-name').value.trim();
+    const fatherName = document.getElementById('qo-father-name').value.trim();
+    const fatherMobile = document.getElementById('qo-father-mobile').value.trim();
+    const dob = document.getElementById('qo-dob').value || '';
+
+    if (!firstName || !lastName || !fatherName || !fatherMobile) {
+        return showError('Please fill in all required fields.');
+    }
+
+    const activeYearId = getActiveAcademicYearId();
+    const classId = currentUserData?.classId;
+
+    if (!activeYearId || !classId) {
+        return showError('Academic year or class not configured.');
+    }
+
+    showSpinner('Registering student...');
+    try {
+        // Create unique student ID (can be modified later by faculty)
+        const studentId = `STU-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`.toUpperCase();
+
+        // Create student profile
+        const studentPayload = withAcademicYear({
+            studentId,
+            firstName,
+            lastName,
+            dob,
+            fatherName,
+            fatherMobile,
+            classId,
+            phone: fatherMobile,
+            guardian: fatherName,
+            registeredVia: 'quick_onboarding',
+            registeredAt: new Date().toISOString(),
+            registeredBy: currentUserData?.uid || 'faculty'
+        });
+
+        const studentRef = doc(window.db, 'students', studentId);
+        await setDoc(studentRef, studentPayload, { merge: true });
+
+        // Create enrollment with auto register number
+        const enrollment = await createOrUpdateEnrollment(
+            activeYearId,
+            classId,
+            studentId,
+            { registrationMethod: 'quick_onboarding' }
+        );
+
+        if (!enrollment || !enrollment.registerNo) {
+            throw new Error('Failed to auto-assign register number.');
+        }
+
+        // Log audit entry
+        createAuditLog('student_quick_onboarding', {
+            studentId,
+            firstName,
+            lastName,
+            registerNo: enrollment.registerNo,
+            classId
+        });
+
+        // Close modal and refresh
+        closeModal('quick-onboard-modal');
+        await reloadAllData();
+        showSuccess(`Student Registered!`, `${firstName} ${lastName} registered as #${enrollment.registerNo}`);
+
+    } catch (err) {
+        console.error('Quick onboarding error:', err);
+        showError('Registration failed: ' + err.message);
+    } finally {
+        hideSpinner();
+    }
+}
+
+/**
+ * Wire up quick onboarding event listeners
+ */
+function setupQuickOnboardingListeners() {
+    const submitBtn = document.getElementById('submit-quick-onboard-btn');
+    if (submitBtn) {
+        submitBtn.addEventListener('click', submitQuickOnboarding);
+    }
+}

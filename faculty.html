@@ -18,7 +18,7 @@
         import {
             getFirestore, collection, getDocs, query, where, addDoc,
             setDoc, doc, getDoc, deleteDoc, onSnapshot, updateDoc,
-            deleteField, orderBy, limit
+            deleteField, orderBy, limit, increment
         } from "https://www.gstatic.com/firebasejs/12.5.0/firebase-firestore.js";
         import { getAuth, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/12.5.0/firebase-auth.js";
 
@@ -35,7 +35,7 @@
             Object.assign(window, {
                 db, auth, collection, getDocs, query, where, addDoc, setDoc,
                 doc, getDoc, deleteDoc, onSnapshot, updateDoc, deleteField,
-                orderBy, limit, onAuthStateChanged, signOut
+                orderBy, limit, increment, onAuthStateChanged, signOut
             });
         }
     </script>
@@ -96,6 +96,9 @@
                                 <div id="user-info-email" class="profile-info-item">...</div>
                                 <div id="user-info-role" class="profile-info-item">...</div>
                                 <hr>
+                                <button id="edit-profile-btn" class="profile-menu-item">
+                                    <i class="fas fa-user-edit"></i> Edit Profile
+                                </button>
                                 <button id="logout-btn" class="profile-menu-item">
                                     <i class="fas fa-sign-out-alt"></i> Logout
                                 </button>
@@ -109,6 +112,15 @@
         <div class="container">
             <div class="main-content">
                 <div id="dashboard" class="tab-content active">
+                    <div class="btn-group" style="margin-bottom: 16px;">
+                        <button type="button" class="btn btn-primary" id="open-early-angel-btn">
+                            <i class="fas fa-star"></i> Early Angel Portal
+                        </button>
+                        <button type="button" class="btn btn-success" id="open-vbs-btn">
+                            <i class="fas fa-church"></i> VBS Class Portal
+                        </button>
+                    </div>
+
                     <div class="card">
                         <div class="card-header">
                             <h2 class="card-title">Dashboard Overview</h2>
@@ -119,8 +131,16 @@
                                 <p class="stat-number" id="total-students">0</p>
                             </div>
                             <div class="card">
+                                <h3>Active Academic Year</h3>
+                                <p class="stat-number" id="faculty-active-year-label">Not set</p>
+                            </div>
+                            <div class="card">
                                 <h3>Classes Held</h3>
                                 <p class="stat-number" id="classes-held">0</p>
+                            </div>
+                            <div class="card">
+                                <h3>Assigned Class</h3>
+                                <p class="stat-number" id="faculty-assigned-class-label">Unassigned</p>
                             </div>
                             <div class="card">
                                 <h3>Avg Attendance</h3>
@@ -148,6 +168,9 @@
                         <div class="card-header">
                             <h2 class="card-title">Student Management</h2>
                             <div>
+                                <button class="btn btn-primary" id="quick-onboard-btn" data-modal="quick-onboard-modal">
+                                    <i class="fas fa-user-plus"></i> Quick Onboarding
+                                </button>
                                 <button class="btn btn-primary" id="add-student-btn" data-modal="student-modal"
                                     data-admin-only="true">
                                     <i class="fas fa-plus"></i> Add Student
@@ -180,6 +203,23 @@
                                 </tbody>
                             </table>
                         </div>
+
+                        <div class="card card-nested" id="year-migration-card">
+                            <div class="card-header">
+                                <h3 class="card-title">Academic Year Migration</h3>
+                            </div>
+                            <p id="year-migration-status">Loading migration settings...</p>
+                            <div class="btn-group">
+                                <button type="button" class="btn btn-outline" id="preview-year-migration-btn">
+                                    <i class="fas fa-sync"></i> Refresh Preview
+                                </button>
+                                <button type="button" class="btn btn-primary" id="run-year-migration-btn" disabled>
+                                    <i class="fas fa-forward"></i> Migrate Previous Year Students
+                                </button>
+                            </div>
+                            <div id="year-migration-preview" class="table-wrapper" style="margin-top: 12px;"></div>
+                        </div>
+
                         <div id="pagination-controls" class="no-print"></div>
                     </div>
                 </div>
@@ -329,6 +369,56 @@
                     </div>
                 </div>
 
+            </div>
+        </div>
+    </div>
+
+    <!-- PHASE 3: Quick Student Onboarding Modal -->
+    <div id="quick-onboard-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Quick Student Onboarding</h3>
+                <button class="close-btn">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p style="color: var(--text-color-light); margin-bottom: 1rem;"><i class="fas fa-info-circle"></i> Quick
+                    entry form - Additional fields can be edited after registration.</p>
+                <form id="quick-onboard-form">
+                    <div class="grid">
+                        <div class="form-group">
+                            <label for="qo-first-name">First Name *</label>
+                            <input type="text" id="qo-first-name" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="qo-last-name">Last Name *</label>
+                            <input type="text" id="qo-last-name" required>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label for="qo-father-name">Father's Name *</label>
+                        <input type="text" id="qo-father-name" required>
+                    </div>
+                    <div class="grid">
+                        <div class="form-group">
+                            <label for="qo-father-mobile">Father's Mobile *</label>
+                            <input type="tel" id="qo-father-mobile" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="qo-dob">Date of Birth</label>
+                            <input type="date" id="qo-dob">
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label for="qo-register-no" style="color: var(--success);">Register Number
+                            (Auto-Generated)</label>
+                        <input type="text" id="qo-register-no" readonly
+                            style="background-color: #f5f5f5; cursor: not-allowed;">
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-outline close-btn">Cancel</button>
+                <button class="btn btn-primary" id="submit-quick-onboard-btn">Register Student</button>
             </div>
         </div>
     </div>
@@ -515,6 +605,93 @@
                 <button class="close-btn" id="close-view-modal">&times;</button>
             </div>
             <div class="modal-body" id="student-details-content"></div>
+        </div>
+    </div>
+
+    <div id="faculty-onboarding-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Faculty Onboarding</h3>
+            </div>
+            <div class="modal-body">
+                <p>Complete this quick setup before using the faculty dashboard.</p>
+                <form id="faculty-onboarding-form">
+                    <div class="grid">
+                        <div class="form-group">
+                            <label for="onboarding-display-name">Display Name *</label>
+                            <input type="text" id="onboarding-display-name" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="onboarding-contact-phone">Contact Phone (Optional)</label>
+                            <input type="tel" id="onboarding-contact-phone">
+                        </div>
+                    </div>
+
+                    <div class="card card-nested" style="margin: 8px 0 12px 0;">
+                        <p><strong>Assigned Class:</strong> <span id="onboarding-class-id">-</span></p>
+                        <p><strong>Active Academic Year:</strong> <span id="onboarding-active-year">-</span></p>
+                        <p id="onboarding-migration-note">Checking migration settings...</p>
+                    </div>
+
+                    <div class="form-group" style="margin-bottom: 10px;">
+                        <label style="display:flex; gap:10px; align-items:flex-start; font-weight:500;">
+                            <input type="checkbox" id="onboarding-ack-year" style="margin-top:5px;">
+                            <span>I confirm I reviewed the active academic year before entering attendance and
+                                assessments.</span>
+                        </label>
+                    </div>
+
+                    <div class="form-group" style="margin-bottom: 0;">
+                        <label style="display:flex; gap:10px; align-items:flex-start; font-weight:500;">
+                            <input type="checkbox" id="onboarding-ack-policy" style="margin-top:5px;">
+                            <span>I agree to keep student data accurate and confidential.</span>
+                        </label>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-primary" id="complete-onboarding-btn" type="submit"
+                    form="faculty-onboarding-form">
+                    <i class="fas fa-check"></i> Complete Setup
+                </button>
+            </div>
+        </div>
+
+        <div id="faculty-profile-modal" class="modal">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h3>Edit My Profile</h3>
+                    <button class="close-btn" id="close-faculty-profile-modal-btn">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <form id="faculty-profile-form">
+                        <div class="grid">
+                            <div class="form-group">
+                                <label for="faculty-profile-display-name">Display Name *</label>
+                                <input type="text" id="faculty-profile-display-name" required>
+                            </div>
+                            <div class="form-group">
+                                <label for="faculty-profile-phone">Contact Phone</label>
+                                <input type="tel" id="faculty-profile-phone">
+                            </div>
+                        </div>
+                        <div class="grid">
+                            <div class="form-group">
+                                <label>Assigned Class</label>
+                                <div id="faculty-profile-class" class="text-large font-bold">Unassigned</div>
+                            </div>
+                            <div class="form-group">
+                                <label>Login Email</label>
+                                <div id="faculty-profile-email" class="text-large font-bold">...</div>
+                            </div>
+                        </div>
+                    </form>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-outline" id="cancel-faculty-profile-edit-btn" type="button">Cancel</button>
+                    <button class="btn btn-primary" id="save-faculty-profile-btn" type="button">Save Profile</button>
+                </div>
+            </div>
         </div>
     </div>
 </body>

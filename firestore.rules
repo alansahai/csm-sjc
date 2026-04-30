@@ -1,0 +1,249 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function hasRoleDoc() {
+      return isSignedIn() && exists(/databases/$(database)/documents/userRoles/$(request.auth.uid));
+    }
+
+    function role() {
+      return hasRoleDoc() ? get(/databases/$(database)/documents/userRoles/$(request.auth.uid)).data.role : null;
+    }
+
+    function facultyClassId() {
+      return hasRoleDoc() ? get(/databases/$(database)/documents/userRoles/$(request.auth.uid)).data.classId : null;
+    }
+
+    function isAdmin() {
+      return role() in ['admin', 'Admin', 'ADMIN'];
+    }
+
+    function isFaculty() {
+      return role() in ['faculty', 'Faculty', 'FACULTY'];
+    }
+
+    function activeAcademicYearId() {
+      return exists(/databases/$(database)/documents/appConfig/global)
+        ? get(/databases/$(database)/documents/appConfig/global).data.activeAcademicYearId
+        : null;
+    }
+
+    function recordInActiveYear() {
+      let activeYear = activeAcademicYearId();
+      return activeYear == null || resource.data.academicYearId == null || resource.data.academicYearId == activeYear;
+    }
+
+    function canReadPreviousYearForMigration() {
+      let activeYear = activeAcademicYearId();
+      return isFaculty()
+        && activeYear != null
+        && resource.data.academicYearId != null
+        && exists(/databases/$(database)/documents/academicYears/$(activeYear))
+        && get(/databases/$(database)/documents/academicYears/$(activeYear)).data.migrationEnabled == true
+        && resource.data.academicYearId == get(/databases/$(database)/documents/academicYears/$(activeYear)).data.previousYearId;
+    }
+
+    function requestInActiveYear() {
+      let activeYear = activeAcademicYearId();
+      return activeYear == null || request.resource.data.academicYearId == activeYear;
+    }
+
+    function facultyCanAccessByClass() {
+      return isFaculty() && resource.data.classId == facultyClassId();
+    }
+
+    function facultyCanWriteByClass() {
+      return isFaculty() && request.resource.data.classId == facultyClassId();
+    }
+
+    function recordInVbsYear() {
+      return resource.data.vbsYear == '2026';
+    }
+
+    function requestInVbsYear() {
+      return request.resource.data.vbsYear == '2026';
+    }
+
+    // Year configuration and app-level settings
+    match /appConfig/{docId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    match /academicYears/{yearId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    match /classYearCounters/{counterId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin() || isFaculty();
+    }
+
+    match /facultyClassAssignments/{assignmentId} {
+      allow read: if isAdmin() || (isSignedIn() && resource.data.uid == request.auth.uid);
+      allow write: if isAdmin();
+    }
+
+    // Core role docs
+    match /userRoles/{uid} {
+      allow read: if isSignedIn();
+      allow create, delete: if isAdmin();
+      allow update: if isAdmin()
+                    || (isSignedIn()
+                        && request.auth.uid == uid
+                        && resource.data.role in ['faculty', 'Faculty', 'FACULTY']
+                        && request.resource.data.role == resource.data.role
+                        && request.resource.data.classId == resource.data.classId
+                        && request.resource.data.email == resource.data.email
+                        && request.resource.data.diff(resource.data).changedKeys().hasOnly([
+                          'displayName',
+                          'phone',
+                          'onboardingCompleted',
+                          'onboardingCompletedAt',
+                          'onboardingVersion',
+                          'onboardingChecklist',
+                          'updatedAt'
+                        ]));
+    }
+
+    // Master student profile docs
+    match /students/{studentId} {
+      allow read: if isAdmin()
+                  || (isFaculty() && facultyCanAccessByClass())
+                  || !isSignedIn();
+      allow write: if isAdmin() || (facultyCanWriteByClass() && requestInActiveYear());
+    }
+
+    // Yearly class enrollments
+    match /enrollments/{enrollmentId} {
+      allow read: if isAdmin()
+                  || (isFaculty() && resource.data.classId == facultyClassId())
+                  || !isSignedIn();
+      allow write: if isAdmin() || (isFaculty() && requestInActiveYear() && request.resource.data.classId == facultyClassId());
+    }
+
+    // Year-scoped collections
+    match /sessions/{sessionId} {
+      allow read: if isAdmin()
+                  || (isFaculty() && recordInActiveYear())
+                  || !isSignedIn();
+      allow write: if isAdmin() || (isFaculty() && requestInActiveYear());
+    }
+
+    match /assessments/{assessmentId} {
+      allow read: if isAdmin()
+                  || (isFaculty() && facultyCanAccessByClass() && recordInActiveYear())
+                  || !isSignedIn();
+      allow write: if isAdmin() || (facultyCanWriteByClass() && requestInActiveYear());
+    }
+
+    match /attendance/{attendanceId} {
+      allow read: if isAdmin()
+                  || (isFaculty() && facultyCanAccessByClass() && recordInActiveYear())
+                  || !isSignedIn();
+      allow write: if isAdmin() || (facultyCanWriteByClass() && requestInActiveYear());
+    }
+
+    match /scores/{scoreId} {
+      allow read: if isAdmin()
+                  || (isFaculty() && facultyCanAccessByClass() && recordInActiveYear())
+                  || !isSignedIn();
+      allow write: if isAdmin() || (facultyCanWriteByClass() && requestInActiveYear());
+    }
+
+    // Existing classes management
+    match /classes/{classId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    // Activity logs
+    match /activityLogs/{logId} {
+      allow read: if isAdmin();
+      allow create: if isSignedIn();
+      allow update, delete: if false;
+    }
+
+    // Early Angel + VBS (Phase 1 schema readiness)
+    match /earlyAngelEntries/{entryId} {
+      allow read: if isAdmin()
+                  || (isFaculty() && resource.data.classId == facultyClassId() && recordInActiveYear())
+                  || !isSignedIn();
+      allow create, update: if isAdmin()
+                            || (isFaculty() && request.resource.data.classId == facultyClassId() && requestInActiveYear());
+      allow delete: if isAdmin()
+                    || (isFaculty() && resource.data.classId == facultyClassId() && recordInActiveYear());
+    }
+
+    match /earlyAngelDailySummary/{summaryId} {
+      allow read: if isAdmin()
+                  || (isFaculty() && resource.data.classId == facultyClassId() && recordInActiveYear())
+                  || !isSignedIn();
+      allow create, update: if isAdmin()
+                            || (isFaculty() && request.resource.data.classId == facultyClassId() && requestInActiveYear());
+      allow delete: if isAdmin()
+                    || (isFaculty() && resource.data.classId == facultyClassId() && recordInActiveYear());
+    }
+
+    match /earlyAngelLeaderboard/{leaderboardId} {
+      allow read: if isAdmin()
+                  || (isFaculty() && resource.data.classId == facultyClassId() && recordInActiveYear())
+                  || !isSignedIn();
+      allow create, update: if isAdmin()
+                            || (isFaculty() && request.resource.data.classId == facultyClassId() && requestInActiveYear());
+      allow delete: if isAdmin()
+                    || (isFaculty() && resource.data.classId == facultyClassId() && recordInActiveYear());
+    }
+
+    match /vbsStudents/{vbsStudentId} {
+      allow read: if isAdmin()
+                  || (isFaculty() && resource.data.classId == facultyClassId() && recordInActiveYear() && recordInVbsYear());
+      allow create, update: if (isAdmin() && requestInActiveYear() && requestInVbsYear())
+                            || (isFaculty() && request.resource.data.classId == facultyClassId() && requestInActiveYear() && requestInVbsYear());
+      allow delete: if isAdmin()
+                    || (isFaculty() && resource.data.classId == facultyClassId() && recordInActiveYear() && recordInVbsYear());
+    }
+
+    match /vbsAttendance/{vbsAttendanceId} {
+      allow read: if isAdmin()
+                  || (isFaculty() && resource.data.classId == facultyClassId() && recordInActiveYear() && recordInVbsYear());
+      allow create, update: if (isAdmin() && requestInActiveYear() && requestInVbsYear())
+                            || (isFaculty() && request.resource.data.classId == facultyClassId() && requestInActiveYear() && requestInVbsYear());
+      allow delete: if isAdmin()
+                    || (isFaculty() && resource.data.classId == facultyClassId() && recordInActiveYear() && recordInVbsYear());
+    }
+
+    match /vbsReports/{vbsReportId} {
+      allow read: if isAdmin()
+                  || (isFaculty() && resource.data.classId == facultyClassId() && recordInActiveYear() && recordInVbsYear());
+      allow create, update: if (isAdmin() && requestInActiveYear() && requestInVbsYear())
+                            || (isFaculty() && request.resource.data.classId == facultyClassId() && requestInActiveYear() && requestInVbsYear());
+      allow delete: if isAdmin()
+                    || (isFaculty() && resource.data.classId == facultyClassId() && recordInActiveYear() && recordInVbsYear());
+    }
+
+    // VBS Turnover Portal (separate from global VBS collections)
+    match /vbs_portal/{portalId} {
+      allow read, write: if isAdmin() || isFaculty();
+
+      // Portal students sub-collection
+      match /students/{studentId} {
+        allow read: if isAdmin() || isFaculty();
+        allow create, update: if isAdmin() || isFaculty();
+        allow delete: if isAdmin() || isFaculty();
+      }
+
+      // Portal attendance sub-collection
+      match /attendance/{attendanceId} {
+        allow read: if isAdmin() || isFaculty();
+        allow create, update: if isAdmin() || isFaculty();
+        allow delete: if isAdmin() || isFaculty();
+      }
+    }
+  }
+}

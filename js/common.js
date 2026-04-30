@@ -1,3 +1,4 @@
+
 /**
  * common.js
  * Shared utility functions for both faculty.html and admin.html.
@@ -32,12 +33,7 @@ document.addEventListener('DOMContentLoaded', () => {
 // 🔐 AUTH & SECURITY
 // -----------------
 
-/**
- * Signs the user out, stops listeners, and redirects to login.
- * This is now the single source of truth for logging out.
- */
 async function logout() {
-    // This function will be defined in admin.js/faculty.js
     if (typeof stopRealtimeListeners === 'function') {
         stopRealtimeListeners();
     }
@@ -49,22 +45,14 @@ async function logout() {
     } catch (error) {
         console.error('Error signing out:', error);
     } finally {
-        window.location.href = 'index.html'; // Redirect to login
+        window.location.href = 'index.html';
     }
 }
 
-/**
- * Verifies the user's role against Firestore.
- * This is the new security check from Section 4 of the plan.
- * @param {string} uid - The user's UID.
- * @param {string} expectedRole - The role required for the page ("admin" or "faculty").
- * @returns {object} The user's role data from Firestore.
- */
 async function verifyRoleFromServer(uid, expectedRole) {
     if (!window.db || !window.doc || !window.getDoc) {
         throw new Error('Firestore connection not ready.');
     }
-
     try {
         const roleDocRef = window.doc(window.db, 'userRoles', uid);
         const docSnap = await window.getDoc(roleDocRef);
@@ -77,16 +65,216 @@ async function verifyRoleFromServer(uid, expectedRole) {
         if (userData.role !== expectedRole) {
             throw new Error(`Role mismatch. Expected "${expectedRole}", found "${userData.role}".`);
         }
-
-        // Success! Return the full user role data.
         return userData;
-
     } catch (err) {
         console.error('Role verification failed:', err);
-        // Re-throw the error to be caught by the caller
         throw err;
     }
 }
+
+// -----------------
+// 🗓️ ACADEMIC YEAR CONTEXT
+// -----------------
+const APP_CONTEXT = {
+    loaded: false,
+    activeAcademicYearId: null,
+    previousAcademicYearId: null,
+    migrationEnabled: false,
+};
+window.APP_CONTEXT = APP_CONTEXT;
+
+function setActiveAcademicYearContext(yearId) {
+    APP_CONTEXT.loaded = true;
+    APP_CONTEXT.activeAcademicYearId = yearId || null;
+}
+
+function getActiveAcademicYearId() {
+    return APP_CONTEXT.activeAcademicYearId || null;
+}
+
+async function loadAcademicYearContext(forceRefresh = false) {
+    if (APP_CONTEXT.loaded && !forceRefresh) {
+        return APP_CONTEXT.activeAcademicYearId;
+    }
+
+    if (!window.db || !window.doc || !window.getDoc) {
+        APP_CONTEXT.loaded = true;
+        APP_CONTEXT.activeAcademicYearId = null;
+        return null;
+    }
+
+    try {
+        const configSnap = await window.getDoc(window.doc(window.db, 'appConfig', 'global'));
+        if (configSnap.exists()) {
+            const cfg = configSnap.data() || {};
+            APP_CONTEXT.activeAcademicYearId = cfg.activeAcademicYearId || null;
+        } else {
+            APP_CONTEXT.activeAcademicYearId = null;
+        }
+
+        APP_CONTEXT.previousAcademicYearId = null;
+        APP_CONTEXT.migrationEnabled = false;
+        if (APP_CONTEXT.activeAcademicYearId) {
+            const activeYearSnap = await window.getDoc(window.doc(window.db, 'academicYears', APP_CONTEXT.activeAcademicYearId));
+            if (activeYearSnap.exists()) {
+                const activeYear = activeYearSnap.data() || {};
+                APP_CONTEXT.previousAcademicYearId = activeYear.previousYearId || null;
+                APP_CONTEXT.migrationEnabled = !!activeYear.migrationEnabled;
+            }
+        }
+    } catch (err) {
+        console.warn('Failed to load academic year context:', err);
+        APP_CONTEXT.activeAcademicYearId = null;
+        APP_CONTEXT.previousAcademicYearId = null;
+        APP_CONTEXT.migrationEnabled = false;
+    }
+
+    APP_CONTEXT.loaded = true;
+    return APP_CONTEXT.activeAcademicYearId;
+}
+
+function withAcademicYear(payload) {
+    const yearId = getActiveAcademicYearId();
+    if (!payload || !yearId) return payload;
+    return { ...payload, academicYearId: yearId };
+}
+
+function isInActiveAcademicYear(record) {
+    if (!record) return false;
+    const yearId = getActiveAcademicYearId();
+    if (!yearId) return true;
+    const previousYearId = APP_CONTEXT.previousAcademicYearId || null;
+    // Keep legacy and previous-year docs visible in menus and selectors.
+    return !record.academicYearId || record.academicYearId === yearId || (previousYearId && record.academicYearId === previousYearId);
+}
+
+function isCurrentAcademicYear(record) {
+    if (!record) return false;
+    const yearId = getActiveAcademicYearId();
+    if (!yearId) return true;
+    return String(record.academicYearId || '') === String(yearId);
+}
+
+function getCurrentAcademicYearRoster(students = [], enrollments = []) {
+    const yearId = getActiveAcademicYearId();
+    const safeStudents = Array.isArray(students) ? students : [];
+    const safeEnrollments = Array.isArray(enrollments) ? enrollments : [];
+
+    if (!yearId) {
+        return safeStudents;
+    }
+
+    const studentMap = new Map(
+        safeStudents.map(student => [String(student.studentId || ''), student])
+    );
+
+    return safeEnrollments
+        .filter(enrollment => isCurrentAcademicYear(enrollment))
+        .map(enrollment => {
+            const masterProfile = studentMap.get(String(enrollment.studentId || '')) || {};
+            return {
+                ...masterProfile,
+                ...enrollment,
+                studentId: enrollment.studentId || masterProfile.studentId || '',
+                classId: enrollment.classId || masterProfile.classId || '',
+                fullName: enrollment.fullName || masterProfile.fullName || [masterProfile.firstName, masterProfile.lastName].filter(Boolean).join(' ').trim(),
+            };
+        })
+        .filter(student => Boolean(student.studentId));
+}
+
+async function watchAcademicYearContext(onChange) {
+    if (!window.db || !window.doc || !window.onSnapshot) return null;
+
+    const configRef = window.doc(window.db, 'appConfig', 'global');
+    const unsub = window.onSnapshot(configRef, async snapshot => {
+        const previousYearId = getActiveAcademicYearId();
+        const nextYearId = snapshot.exists() ? (snapshot.data()?.activeAcademicYearId || null) : null;
+
+        setActiveAcademicYearContext(nextYearId);
+        if (typeof loadAcademicYearContext === 'function') {
+            await loadAcademicYearContext(true);
+        }
+
+        if (typeof onChange === 'function' && previousYearId !== nextYearId) {
+            await onChange(nextYearId, previousYearId);
+        }
+    }, err => console.error('[realtime] appConfig listener error', err));
+
+    return unsub;
+}
+
+async function upsertEnrollmentForStudent(student, updatedBy = '') {
+    if (!student || !student.studentId || !student.classId) return null;
+    if (!window.db || !window.doc || !window.getDoc || !window.setDoc) return null;
+
+    const academicYearId = getActiveAcademicYearId();
+    if (!academicYearId) return null;
+
+    const studentId = String(student.studentId).trim();
+    const classId = String(student.classId).trim();
+    if (!studentId || !classId) return null;
+
+    const enrollmentId = `${academicYearId}_${classId}_${studentId}`;
+    const enrollmentRef = window.doc(window.db, 'enrollments', enrollmentId);
+    const existingEnrollmentSnap = await window.getDoc(enrollmentRef);
+
+    let registerNo = null;
+    if (existingEnrollmentSnap.exists()) {
+        const existingData = existingEnrollmentSnap.data() || {};
+        if (existingData.registerNo !== undefined && existingData.registerNo !== null) {
+            registerNo = Number(existingData.registerNo);
+        }
+    }
+
+    if (registerNo === null || Number.isNaN(registerNo)) {
+        const counterId = `${academicYearId}_${classId}`;
+        const counterRef = window.doc(window.db, 'classYearCounters', counterId);
+        const counterSnap = await window.getDoc(counterRef);
+        const currentNo = counterSnap.exists() ? Number(counterSnap.data().lastRegisterNo || 0) : 0;
+        registerNo = currentNo + 1;
+
+        await window.setDoc(counterRef, {
+            id: counterId,
+            academicYearId,
+            classId,
+            lastRegisterNo: registerNo,
+            updatedAt: new Date().toISOString(),
+        }, { merge: true });
+    }
+
+    const fullName = [student.firstName, student.lastName].filter(Boolean).join(' ').trim();
+    const enrollmentPayload = {
+        id: enrollmentId,
+        academicYearId,
+        classId,
+        studentId,
+        registerNo,
+        status: 'active',
+        fullName: fullName || student.name || studentId,
+        updatedAt: new Date().toISOString(),
+    };
+
+    if (!existingEnrollmentSnap.exists()) {
+        enrollmentPayload.createdAt = new Date().toISOString();
+    }
+    if (updatedBy) {
+        enrollmentPayload.updatedBy = updatedBy;
+    }
+
+    await window.setDoc(enrollmentRef, enrollmentPayload, { merge: true });
+    return enrollmentPayload;
+}
+
+window.setActiveAcademicYearContext = setActiveAcademicYearContext;
+window.getActiveAcademicYearId = getActiveAcademicYearId;
+window.loadAcademicYearContext = loadAcademicYearContext;
+window.withAcademicYear = withAcademicYear;
+window.isInActiveAcademicYear = isInActiveAcademicYear;
+window.isCurrentAcademicYear = isCurrentAcademicYear;
+window.getCurrentAcademicYearRoster = getCurrentAcademicYearRoster;
+window.watchAcademicYearContext = watchAcademicYearContext;
+window.upsertEnrollmentForStudent = upsertEnrollmentForStudent;
 
 // -----------------
 // 🔄 SPINNER CONTROLS
@@ -160,7 +348,6 @@ function generateId() {
 
 function formatDate(dateString) {
     if (!dateString) return 'N/A';
-    // Use UTC to avoid timezone issues from date strings
     const date = new Date(dateString);
     return date.toLocaleDateString('en-US', {
         timeZone: 'UTC',
@@ -172,7 +359,6 @@ function formatDate(dateString) {
 
 function formatDateTime(date) {
     if (!date) return 'N/A';
-    // Assumes 'date' is a Date object (e.g., from Firestore timestamp.toDate())
     return date.toLocaleString('en-US', {
         year: 'numeric',
         month: 'short',
@@ -194,28 +380,19 @@ function debounce(fn, wait = 300) {
     return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), wait); };
 }
 
-/**
- * Populates a <select> dropdown with data.
- * @param {string} selectId - The ID of the <select> element.
- * @param {Array} data - The array of data objects.
- * @param {Function} valueKeyFn - Function to get the value from an item.
- * @param {Function} textKeyFn - Function to get the text from an item.
- */
 function populateDropdown(selectId, data, valueKeyFn, textKeyFn) {
     const select = document.getElementById(selectId);
     if (!select) return;
 
     const currentValue = select.value;
-
-    // Keep the first option (e.g., "-- Select --")
     const firstOption = select.options[0] ? select.options[0].cloneNode(true) : document.createElement('option');
     if (!firstOption.value) {
         firstOption.value = "";
         firstOption.textContent = "-- Select --";
     }
 
-    select.innerHTML = ''; // Clear all
-    select.appendChild(firstOption); // Add the default back
+    select.innerHTML = '';
+    select.appendChild(firstOption);
 
     data.forEach(item => {
         const option = document.createElement('option');
@@ -224,18 +401,9 @@ function populateDropdown(selectId, data, valueKeyFn, textKeyFn) {
         select.appendChild(option);
     });
 
-    // Restore previous selection if possible
     select.value = currentValue;
 }
 
-/**
- * Creates an audit log in Firestore.
- * @param {string} action - A short code for the action (e.g., 'student_created').
- * @param {object} details - Any extra details to store (e.g., { studentId: '101' }).
- */
-/**
- * 🛡️ Creates an audit log in Firestore using Server Timestamp.
- */
 async function createAuditLog(action, details = {}) {
     if (!window.db || !window.addDoc || !window.collection) return;
 
@@ -248,7 +416,6 @@ async function createAuditLog(action, details = {}) {
             details: details,
             userEmail: currentUser.email || 'unknown',
             uid: currentUser.uid || 'unknown',
-            // FIX: Use serverTimestamp() for accurate, tamper-proof time
             timestamp: window.serverTimestamp ? window.serverTimestamp() : new Date()
         };
 
@@ -265,39 +432,44 @@ async function createAuditLog(action, details = {}) {
 // -----------------
 
 /**
- * Renders the marks chart on a canvas.
- * @param {Array} assessmentDetails - Array of objects {name, marks, totalMarks}.
+ * UPDATED: Renders the marks chart.
+ * Accepts `targetId` (string) and `enableAnimation` (bool).
  */
-function renderMarksChart(assessmentDetails) {
-    const canvas = document.getElementById('marks-chart');
+function renderMarksChart(assessmentDetails, targetId = 'marks-chart', enableAnimation = true) {
+    const canvas = document.getElementById(targetId);
     if (!canvas) return;
-    if (window.marksChart) window.marksChart.destroy(); // Destroy old chart
+
+    // Clear existing chart instance if it exists on this canvas
+    const existingChart = Chart.getChart(canvas);
+    if (existingChart) existingChart.destroy();
 
     const labels = assessmentDetails.map(d => d.name);
     const percentages = assessmentDetails.map(d =>
         d.totalMarks > 0 && d.marks !== null
             ? Math.round((d.marks / d.totalMarks) * 100)
-            : null // Use null for "missing" data
+            : null
     );
 
-    window.marksChart = new Chart(canvas.getContext('2d'), {
+    // Create new chart
+    new Chart(canvas.getContext('2d'), {
         type: 'line',
         data: {
             labels: labels,
             datasets: [{
                 label: 'Performance (%)',
                 data: percentages,
-                borderColor: 'var(--primary)',
+                borderColor: '#3498db', // hardcoded hex for PDF consistency
                 backgroundColor: 'rgba(52, 152, 219, 0.1)',
                 borderWidth: 2,
                 fill: true,
                 tension: 0.3,
-                spanGaps: true // Connects the line over null data points
+                spanGaps: true
             }]
         },
         options: {
             responsive: true,
             maintainAspectRatio: false,
+            animation: enableAnimation ? { duration: 1000 } : false, // Disable animation for PDF
             scales: {
                 y: { beginAtZero: true, max: 100 }
             }
@@ -306,18 +478,20 @@ function renderMarksChart(assessmentDetails) {
 }
 
 /**
- * Renders the attendance chart on a canvas.
- * @param {string} studentId - The ID of the student.
- * @param {object} DATA_MODELS - The global data models object.
+ * UPDATED: Renders the attendance chart.
+ * Accepts `targetId` and `enableAnimation`.
  */
-function renderAttendanceChart(studentId, DATA_MODELS) {
-    const canvas = document.getElementById('attendance-chart');
+function renderAttendanceChart(studentId, DATA_MODELS, targetId = 'attendance-chart', enableAnimation = true) {
+    const canvas = document.getElementById(targetId);
     if (!canvas) return;
-    if (window.attendanceChart) window.attendanceChart.destroy();
+
+    // Clear existing chart
+    const existingChart = Chart.getChart(canvas);
+    if (existingChart) existingChart.destroy();
 
     const monthlyAttendance = {};
     DATA_MODELS.sessions.filter(s => s.status === 'Available').forEach(session => {
-        const month = session.date.substring(0, 7); // YYYY-MM
+        const month = session.date.substring(0, 7);
         if (!monthlyAttendance[month]) {
             monthlyAttendance[month] = { total: 0, present: 0 };
         }
@@ -334,14 +508,14 @@ function renderAttendanceChart(studentId, DATA_MODELS) {
         return d.total > 0 ? Math.round((d.present / d.total) * 100) : 0;
     });
 
-    window.attendanceChart = new Chart(canvas.getContext('2d'), {
+    new Chart(canvas.getContext('2d'), {
         type: 'bar',
         data: {
             labels: months.map(m => m.replace('-', '/')),
             datasets: [{
                 label: 'Attendance (%)',
                 data: percentages,
-                backgroundColor: 'var(--success)',
+                backgroundColor: '#27ae60', // Hardcoded hex for PDF
                 borderColor: 'rgba(39, 174, 96, 0.7)',
                 borderWidth: 1
             }]
@@ -349,6 +523,7 @@ function renderAttendanceChart(studentId, DATA_MODELS) {
         options: {
             responsive: true,
             maintainAspectRatio: false,
+            animation: enableAnimation ? { duration: 1000 } : false, // Disable for PDF
             scales: {
                 y: { beginAtZero: true, max: 100 }
             }
@@ -357,33 +532,29 @@ function renderAttendanceChart(studentId, DATA_MODELS) {
 }
 
 // ---------------------------------------------------
-// 🖨️ PRINTING & PDF EXPORT (Fixes Truncation & OCR)
+// 🖨️ PRINTING & PDF EXPORT
 // ---------------------------------------------------
 
-/**
- * Converts Chart.js canvases to Images.
- * This fixes the "Graph cut off" and "Blank Graph" issues in Print/PDF.
- * @returns {Function} A restore function to revert changes.
- */
 function prepareChartsForPrint(containerId) {
     const container = document.getElementById(containerId);
+    if (!container) return () => { };
+
     const originalCanvases = [];
 
     container.querySelectorAll('canvas').forEach(canvas => {
-        // Save original state
         const parent = canvas.parentNode;
         const nextSibling = canvas.nextSibling;
         originalCanvases.push({ parent, canvas, nextSibling });
 
-        // Create Image from Canvas data
         const img = document.createElement('img');
-        img.src = canvas.toDataURL('image/png'); // High-quality PNG
+        try {
+            img.src = canvas.toDataURL('image/png');
+        } catch (e) { console.warn("Canvas empty or tainted", e); }
+
         img.style.width = '100%';
         img.style.height = 'auto';
-        img.style.maxWidth = '100%';
-        img.className = 'chart-print-image'; // Marker class
+        img.className = 'chart-print-image';
 
-        // Remove canvas, insert Image
         canvas.remove();
         if (nextSibling) {
             parent.insertBefore(img, nextSibling);
@@ -392,7 +563,6 @@ function prepareChartsForPrint(containerId) {
         }
     });
 
-    // Return a function to undo this swap
     return function restoreCharts() {
         const images = container.querySelectorAll('.chart-print-image');
         images.forEach((img, index) => {
@@ -409,20 +579,12 @@ function prepareChartsForPrint(containerId) {
     };
 }
 
-/**
- * Robust Print Function.
- * 1. Converts charts to images.
- * 2. Uses CSS to hide everything except the report.
- * 3. Triggers window.print().
- */
 function printReport(containerId, reportTitle) {
     const container = document.getElementById(containerId);
     if (!container) return;
 
-    // 1. Swap Charts -> Images
     const restoreCharts = prepareChartsForPrint(containerId);
 
-    // 2. Add title temporarily if missing
     let titleEl = null;
     if (!container.querySelector('h2')) {
         titleEl = document.createElement('div');
@@ -431,127 +593,327 @@ function printReport(containerId, reportTitle) {
         container.insertBefore(titleEl, container.firstChild);
     }
 
-    // 3. Print
-    // We rely on the updated @media print CSS to hide the sidebar/buttons
-    // and show only this container.
     window.print();
 
-    // 4. Cleanup (Restore interactivity)
     if (titleEl) titleEl.remove();
     restoreCharts();
 }
 
-/**
- * "Export to PDF" using html2pdf.js.
- * Note: This creates an IMAGE-based PDF (Non-OCR).
- * For Selectable Text, use the "Print" button -> "Save as PDF".
- */
-function downloadReportPDF(studentId) {
-    const student = DATA_MODELS.students.find(s => s.studentId === studentId);
-    if (!student) return alert('Student not found');
-
-    const element = document.getElementById('report-content');
-
-    // Swap charts to images to prevent cutting
-    const restoreCharts = prepareChartsForPrint('report-content');
-
-    // Options to handle page breaks better
-    const opt = {
-        margin: [10, 10, 10, 10], // Top, Right, Bottom, Left
-        filename: `Report_${student.studentId}.pdf`,
-        image: { type: 'jpeg', quality: 0.98 },
-        html2canvas: { scale: 2, useCORS: true, scrollY: 0 },
-        jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
-        // This prevents elements from being sliced in half
-        pagebreak: { mode: ['avoid-all', 'css', 'legacy'] }
-    };
-
-    // Generate
-    html2pdf().set(opt).from(element).save().then(() => {
-        restoreCharts(); // Restore after download
-    }).catch(err => {
-        console.error(err);
-        restoreCharts();
-    });
-}
-/**
- * Helper to trigger a browser download of CSV text.
- * @param {string} content - The CSV string content.
- * @param {string} filename - The filename to save as.
- */
 function downloadCSV(content, filename) {
-    // Create a blob with the CSV content
     const blob = new Blob([content], { type: 'text/csv;charset=utf-8;' });
-
-    // Create a temporary link element
     const link = document.createElement('a');
     const url = URL.createObjectURL(blob);
-
-    // Set link attributes
     link.setAttribute('href', url);
     link.setAttribute('download', filename);
     link.style.visibility = 'hidden';
-
-    // Add to DOM, click it, and remove it
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
 }
 
 /**
- * Generic function to download ANY container as a PDF.
- * Uses html2pdf and handles chart safety.
+ * UPDATED: Fixed Download PDF logic for individual reports
  */
-/**
- * Generic function to download ANY container as a PDF.
- * Uses html2pdf and handles chart safety.
- */
-/**
- * Generic function to download ANY container as a PDF.
- */
+async function downloadReportPDF(studentId) {
+    const student = getCurrentAcademicYearRoster(DATA_MODELS.students, DATA_MODELS.enrollments || [])
+        .find(s => String(s.studentId) === String(studentId));
+    if (!student) return alert('Student not found');
+
+    const element = document.getElementById('report-content');
+
+    // FIX: Scroll to top so content is visible for html2canvas
+    window.scrollTo(0, 0);
+
+    // Re-render charts WITHOUT animation
+    const studentScores = DATA_MODELS.scores.filter(s => s.studentId === studentId);
+    const assessmentDetails = studentScores.map(score => {
+        const assessment = DATA_MODELS.assessments.find(a => a.id === score.assessmentId);
+        return {
+            name: assessment ? assessment.name : 'Unknown',
+            totalMarks: (assessment && assessment.totalMarks > 0) ? assessment.totalMarks : 0,
+            marks: score.marks
+        };
+    });
+
+    // 1. Force instant render
+    renderMarksChart(assessmentDetails, 'marks-chart', false);
+    renderAttendanceChart(studentId, DATA_MODELS, 'attendance-chart', false);
+
+    // FIX: Wait longer for canvas to paint (300ms)
+    await new Promise(r => setTimeout(r, 300));
+
+    // 2. Swap Charts -> Images
+    const restoreCharts = prepareChartsForPrint('report-content');
+
+    const opt = {
+        margin: [10, 10, 10, 10],
+        filename: `Report_${student.studentId}.pdf`,
+        image: { type: 'jpeg', quality: 0.98 },
+        html2canvas: { scale: 2, useCORS: true, scrollY: 0 },
+        jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
+        pagebreak: { mode: ['avoid-all', 'css', 'legacy'] }
+    };
+
+    html2pdf().set(opt).from(element).save().then(() => {
+        restoreCharts();
+        // Restore animation for UI
+        renderMarksChart(assessmentDetails, 'marks-chart', true);
+        renderAttendanceChart(studentId, DATA_MODELS, 'attendance-chart', true);
+    }).catch(err => {
+        console.error(err);
+        restoreCharts();
+    });
+}
+
+// Ensure function is exposed
+window.downloadReportPDF = downloadReportPDF;
+
 async function downloadContainerAsPDF(containerId, filename) {
     const element = document.getElementById(containerId);
     if (!element) return console.error('Container not found:', containerId);
 
-    // Ensure html2pdf is loaded
-    if (typeof html2pdf === 'undefined') {
-        return alert("Error: html2pdf library not found. Please check your script tags.");
-    }
+    window.scrollTo(0, 0);
 
-    // 1. Swap Charts -> Images (If any exist)
-    const restoreCharts = (typeof prepareChartsForPrint === 'function')
-        ? prepareChartsForPrint(containerId)
-        : () => { };
+    const restoreCharts = prepareChartsForPrint(containerId);
 
     const opt = {
         margin: [10, 10, 10, 10],
         filename: filename,
         image: { type: 'jpeg', quality: 0.98 },
-        html2canvas: { scale: 2, useCORS: true, logging: false },
+        html2canvas: { scale: 2, useCORS: true, logging: false, scrollY: 0 },
         jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
         pagebreak: { mode: ['avoid-all', 'css', 'legacy'] }
     };
-
-    // Visual feedback
-    let btn = null;
-    let originalText = "";
-    if (document.activeElement && document.activeElement.tagName === 'BUTTON') {
-        btn = document.activeElement;
-        originalText = btn.innerHTML;
-        btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Generating...';
-        btn.disabled = true;
-    }
 
     try {
         await html2pdf().set(opt).from(element).save();
     } catch (err) {
         console.error('PDF Generation Error:', err);
-        alert('Failed to generate PDF: ' + err.message);
     } finally {
         restoreCharts();
-        if (btn) {
-            btn.innerHTML = originalText;
-            btn.disabled = false;
+    }
+}
+
+// ---------------------------------------------------
+// 🎓 PHASE 1: ACADEMIC YEAR CORE INFRASTRUCTURE
+// ---------------------------------------------------
+
+/**
+ * PHASE 1: Initialize appConfig/global singleton
+ * Creates or fetches the app-level configuration document
+ */
+async function initializeAppConfig() {
+    if (!window.db || !window.getDoc || !window.setDoc || !window.doc) return null;
+
+    try {
+        const configRef = window.doc(window.db, 'appConfig', 'global');
+        const configSnap = await window.getDoc(configRef);
+
+        if (!configSnap.exists()) {
+            // Create global config with defaults
+            const defaultConfig = {
+                activeAcademicYearId: null,
+                earlyAngelEnabled: false,
+                vbsEnabled: false,
+                createdAt: window.serverTimestamp ? window.serverTimestamp() : new Date(),
+                updatedAt: window.serverTimestamp ? window.serverTimestamp() : new Date()
+            };
+            await window.setDoc(configRef, defaultConfig);
+            console.log('Created appConfig/global');
+            return defaultConfig;
+        } else {
+            return configSnap.data();
         }
+    } catch (err) {
+        console.error('Failed to initialize appConfig/global:', err);
+        return null;
+    }
+}
+
+/**
+ * PHASE 1: Set active academic year in appConfig/global
+ */
+async function setActiveAcademicYear(yearId) {
+    if (!window.db || !window.updateDoc || !window.doc) return false;
+
+    try {
+        const configRef = window.doc(window.db, 'appConfig', 'global');
+        await window.updateDoc(configRef, {
+            activeAcademicYearId: yearId,
+            updatedAt: window.serverTimestamp ? window.serverTimestamp() : new Date()
+        });
+        console.log(`Active academic year set to: ${yearId}`);
+        return true;
+    } catch (err) {
+        console.error('Failed to set active academic year:', err);
+        return false;
+    }
+}
+
+/**
+ * PHASE 1: Create a new academic year document
+ * @param {string} yearLabel - e.g., "2026-27"
+ * @param {string} startDate - YYYY-MM-DD
+ * @param {string} endDate - YYYY-MM-DD
+ * @param {string} previousYearId - optional, for migration tracking
+ */
+async function createAcademicYear(yearLabel, startDate, endDate, previousYearId = null) {
+    if (!window.db || !window.setDoc || !window.doc) return null;
+
+    try {
+        const yearId = yearLabel.replace(/\s+/g, '_').toLowerCase();
+        const yearRef = window.doc(window.db, 'academicYears', yearId);
+
+        const yearData = {
+            id: yearId,
+            yearLabel: yearLabel,
+            startDate: startDate,
+            endDate: endDate,
+            status: 'active', // or 'archived', 'draft'
+            previousYearId: previousYearId || null,
+            migrationEnabled: false,
+            createdAt: window.serverTimestamp ? window.serverTimestamp() : new Date(),
+            updatedAt: window.serverTimestamp ? window.serverTimestamp() : new Date()
+        };
+
+        await window.setDoc(yearRef, yearData);
+        console.log(`Academic year created: ${yearId}`);
+        return { id: yearId, ...yearData };
+    } catch (err) {
+        console.error('Failed to create academic year:', err);
+        return null;
+    }
+}
+
+/**
+ * PHASE 1: Fetch all academic years, sorted by start date descending
+ */
+async function fetchAllAcademicYears() {
+    if (!window.db || !window.getDocs || !window.query || !window.collection) return [];
+
+    try {
+        const yearsRef = window.collection(window.db, 'academicYears');
+        const yearsSnap = await window.getDocs(yearsRef);
+        const years = [];
+        yearsSnap.forEach(doc => {
+            years.push({ id: doc.id, ...doc.data() });
+        });
+        // Sort by startDate descending
+        years.sort((a, b) => {
+            const dateA = new Date(a.startDate);
+            const dateB = new Date(b.startDate);
+            return dateB - dateA;
+        });
+        return years;
+    } catch (err) {
+        console.error('Failed to fetch academic years:', err);
+        return [];
+    }
+}
+
+/**
+ * PHASE 1: Enable/disable migration for a year
+ */
+async function setMigrationEnabled(yearId, enabled) {
+    if (!window.db || !window.updateDoc || !window.doc) return false;
+
+    try {
+        const yearRef = window.doc(window.db, 'academicYears', yearId);
+        await window.updateDoc(yearRef, {
+            migrationEnabled: !!enabled,
+            updatedAt: window.serverTimestamp ? window.serverTimestamp() : new Date()
+        });
+        console.log(`Migration ${enabled ? 'enabled' : 'disabled'} for year: ${yearId}`);
+        return true;
+    } catch (err) {
+        console.error('Failed to update migration status:', err);
+        return false;
+    }
+}
+
+/**
+ * PHASE 1: Create or update an enrollment record
+ * Links a student to a class in a specific academic year
+ * Auto-generates register number from classYearCounters
+ */
+async function createOrUpdateEnrollment(academicYearId, classId, studentId, studentData = {}) {
+    if (!window.db || !window.setDoc || !window.doc || !window.updateDoc || !window.serverTimestamp) return null;
+
+    try {
+        // Get/create class-year register counter
+        const counterId = `${academicYearId}_${classId}`;
+        const counterRef = window.doc(window.db, 'classYearCounters', counterId);
+
+        // Atomic increment: get current count and increment
+        const counterSnap = await window.getDoc(counterRef);
+        let registerNo = 1;
+
+        if (counterSnap.exists()) {
+            registerNo = (counterSnap.data().count || 0) + 1;
+        } else {
+            // Create counter at 1
+            await window.setDoc(counterRef, {
+                academicYearId: academicYearId,
+                classId: classId,
+                count: 1,
+                createdAt: window.serverTimestamp()
+            });
+        }
+
+        // Update counter
+        await window.updateDoc(counterRef, {
+            count: registerNo,
+            updatedAt: window.serverTimestamp()
+        });
+
+        // Create/update enrollment
+        const enrollmentId = `${academicYearId}_${classId}_${studentId}`;
+        const enrollmentRef = window.doc(window.db, 'enrollments', enrollmentId);
+
+        const enrollmentData = {
+            id: enrollmentId,
+            academicYearId: academicYearId,
+            classId: classId,
+            studentId: studentId,
+            registerNo: registerNo,
+            status: 'active', // or 'inactive', 'transferred'
+            migratedFromYearId: studentData.migratedFromYearId || null,
+            createdAt: window.serverTimestamp(),
+            updatedAt: window.serverTimestamp()
+        };
+
+        await window.setDoc(enrollmentRef, enrollmentData, { merge: true });
+        console.log(`Enrollment created: ${enrollmentId} (Register: ${registerNo})`);
+        return { id: enrollmentId, registerNo, ...enrollmentData };
+    } catch (err) {
+        console.error('Failed to create/update enrollment:', err);
+        return null;
+    }
+}
+
+/**
+ * PHASE 1: Fetch enrollments for a specific class and academic year
+ */
+async function fetchEnrollmentsForClass(academicYearId, classId) {
+    if (!window.db || !window.getDocs || !window.query || !window.collection || !window.where) return [];
+
+    try {
+        const enrollmentsRef = window.collection(window.db, 'enrollments');
+        const q = window.query(
+            enrollmentsRef,
+            window.where('academicYearId', '==', academicYearId),
+            window.where('classId', '==', classId)
+        );
+        const enrollmentsSnap = await window.getDocs(q);
+        const enrollments = [];
+        enrollmentsSnap.forEach(doc => {
+            enrollments.push({ id: doc.id, ...doc.data() });
+        });
+        // Sort by registerNo ascending
+        enrollments.sort((a, b) => a.registerNo - b.registerNo);
+        return enrollments;
+    } catch (err) {
+        console.error('Failed to fetch enrollments:', err);
+        return [];
     }
 }

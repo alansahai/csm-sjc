@@ -14,14 +14,14 @@
     <script src="/firebase.config.js"></script>
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/12.5.0/firebase-app.js";
-        import { getFirestore, collection, getDocs, query, where, doc, getDoc, orderBy } from "https://www.gstatic.com/firebasejs/12.5.0/firebase-firestore.js";
+        import { getFirestore, collection, getDocs, query, where, doc, getDoc, setDoc, orderBy } from "https://www.gstatic.com/firebasejs/12.5.0/firebase-firestore.js";
 
         const firebaseConfig = window.__FIREBASE_CONFIG__;
         if (firebaseConfig) {
             const app = initializeApp(firebaseConfig);
             window.db = getFirestore(app);
             // Expose needed functions
-            Object.assign(window, { collection, getDocs, query, where, doc, getDoc, orderBy });
+            Object.assign(window, { collection, getDocs, query, where, doc, getDoc, setDoc, orderBy });
         }
     </script>
 
@@ -47,6 +47,7 @@
                             <li><a href="#" class="active" data-tab="profile">My Profile</a></li>
                             <li><a href="#" data-tab="attendance">Attendance</a></li>
                             <li><a href="#" data-tab="results">Results</a></li>
+                            <li><a href="#" data-tab="early-angel">Early Angel</a></li>
                         </ul>
                     </nav>
                     <div class="header-actions">
@@ -75,6 +76,9 @@
                     <div class="card">
                         <div class="card-header">
                             <h2 class="card-title">Student Information</h2>
+                            <button type="button" class="btn btn-outline btn-sm" id="edit-profile-btn">
+                                <i class="fas fa-user-edit"></i> Edit Profile
+                            </button>
                         </div>
                         <div class="grid">
                             <div class="form-group">
@@ -88,6 +92,18 @@
                             <div class="form-group">
                                 <label>Class / Section</label>
                                 <div id="st-class">...</div>
+                            </div>
+                            <div class="form-group">
+                                <label>Register Number</label>
+                                <div id="st-register-no">...</div>
+                            </div>
+                            <div class="form-group">
+                                <label>Academic Year</label>
+                                <div id="st-academic-year">...</div>
+                            </div>
+                            <div class="form-group">
+                                <label>Enrollment Status</label>
+                                <div id="st-enrollment-status">...</div>
                             </div>
                             <div class="form-group">
                                 <label>Date of Birth</label>
@@ -115,6 +131,17 @@
                                 <h6>Assessments Taken</h6>
                                 <p class="stat-number" id="st-assess-count">0</p>
                             </div>
+                            <div class="card card-nested">
+                                <h6>Early Angel Days</h6>
+                                <p class="stat-number" id="st-early-count">0</p>
+                            </div>
+                        </div>
+                        <hr class="section-divider">
+                        <div class="card-header">
+                            <h3>Behavior Note</h3>
+                        </div>
+                        <div class="card card-nested">
+                            <p id="st-behavior-note">No behavior note available.</p>
                         </div>
                     </div>
                 </div>
@@ -130,8 +157,44 @@
                         </div>
 
                         <div id="attendance-report-wrap">
+                            <div class="report-stats-grid">
+                                <div class="report-stat-card">
+                                    <h6>Total Sessions</h6>
+                                    <p id="st-att-total">0</p>
+                                </div>
+                                <div class="report-stat-card">
+                                    <h6>Present / Late</h6>
+                                    <p id="st-att-present">0</p>
+                                </div>
+                                <div class="report-stat-card">
+                                    <h6>Absent</h6>
+                                    <p id="st-att-absent">0</p>
+                                </div>
+                                <div class="report-stat-card">
+                                    <h6>Excused</h6>
+                                    <p id="st-att-excused">0</p>
+                                </div>
+                            </div>
                             <div class="chart-container" style="max-height: 200px;">
                                 <canvas id="attendance-chart"></canvas>
+                            </div>
+                            <div class="card card-nested">
+                                <h3>Monthly Attendance Breakdown</h3>
+                                <div class="table-wrapper">
+                                    <table id="st-attendance-monthly-table" class="data-table">
+                                        <thead>
+                                            <tr>
+                                                <th>Month</th>
+                                                <th>Total Sessions</th>
+                                                <th>Present / Late</th>
+                                                <th>Absent</th>
+                                                <th>Excused</th>
+                                                <th>Attendance %</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody></tbody>
+                                    </table>
+                                </div>
                             </div>
                             <br>
                             <div class="table-wrapper">
@@ -182,6 +245,107 @@
                     </div>
                 </div>
 
+                <div id="early-angel" class="tab-content">
+                    <div class="card">
+                        <div class="card-header">
+                            <h2 class="card-title">My Early Angel Overview</h2>
+                            <button class="btn btn-primary btn-sm"
+                                onclick="downloadContainerAsPDF('early-angel-report-wrap', 'My_Early_Angel.pdf')">
+                                <i class="fas fa-download"></i> PDF
+                            </button>
+                        </div>
+
+                        <div id="early-angel-report-wrap">
+                            <div class="report-stats-grid">
+                                <div class="report-stat-card">
+                                    <h6>Total Early Days</h6>
+                                    <p id="st-early-total-days">0</p>
+                                </div>
+                                <div class="report-stat-card">
+                                    <h6>This Month</h6>
+                                    <p id="st-early-this-month">0</p>
+                                </div>
+                                <div class="report-stat-card">
+                                    <h6>Current Streak</h6>
+                                    <p id="st-early-current-streak">0</p>
+                                </div>
+                                <div class="report-stat-card">
+                                    <h6>Longest Streak</h6>
+                                    <p id="st-early-longest-streak">0</p>
+                                </div>
+                            </div>
+
+                            <div class="card card-nested">
+                                <h3>Entry History</h3>
+                                <p id="st-early-empty-note">No Early Angel entries recorded yet.</p>
+                                <div class="table-wrapper">
+                                    <table id="st-early-table" class="data-table">
+                                        <thead>
+                                            <tr>
+                                                <th>Date</th>
+                                                <th>Entry Time</th>
+                                                <th>Class</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody></tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+    </div>
+
+    <div id="student-profile-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Edit My Profile</h3>
+                <button class="close-btn" id="close-profile-modal-btn">&times;</button>
+            </div>
+            <div class="modal-body">
+                <form id="student-profile-form">
+                    <div class="grid">
+                        <div class="form-group">
+                            <label for="profile-first-name">First Name *</label>
+                            <input type="text" id="profile-first-name" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="profile-last-name">Last Name *</label>
+                            <input type="text" id="profile-last-name" required>
+                        </div>
+                    </div>
+                    <div class="grid">
+                        <div class="form-group">
+                            <label for="profile-dob">Date of Birth</label>
+                            <input type="date" id="profile-dob">
+                        </div>
+                        <div class="form-group">
+                            <label for="profile-phone">Mobile Number</label>
+                            <input type="tel" id="profile-phone">
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label for="profile-guardian">Guardian Name *</label>
+                        <input type="text" id="profile-guardian" required>
+                    </div>
+                    <div class="grid">
+                        <div class="form-group">
+                            <label for="profile-email">Email</label>
+                            <input type="email" id="profile-email">
+                        </div>
+                        <div class="form-group">
+                            <label for="profile-notes">Notes</label>
+                            <textarea id="profile-notes" rows="3"></textarea>
+                        </div>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-outline" id="cancel-profile-edit-btn" type="button">Cancel</button>
+                <button class="btn btn-primary" id="save-profile-btn" type="button">Save Profile</button>
             </div>
         </div>
     </div>

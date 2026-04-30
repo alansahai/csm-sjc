@@ -18,7 +18,7 @@
         import {
             getFirestore, collection, getDocs, query, where, addDoc,
             setDoc, doc, getDoc, deleteDoc, onSnapshot, updateDoc,
-            deleteField, orderBy, limit, writeBatch, serverTimestamp // <--- ADDED THIS
+            deleteField, orderBy, limit, writeBatch, serverTimestamp, increment // <--- ADDED THIS
         } from "https://www.gstatic.com/firebasejs/12.5.0/firebase-firestore.js";
         import { getAuth, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/12.5.0/firebase-auth.js";
 
@@ -35,12 +35,13 @@
                 db, auth, collection, getDocs, query, where, addDoc, setDoc,
                 doc, getDoc, deleteDoc, onSnapshot, updateDoc, deleteField,
                 orderBy, limit, onAuthStateChanged, signOut,
-                writeBatch, serverTimestamp // <--- ADDED THIS
+                writeBatch, serverTimestamp, increment // <--- ADDED THIS
             });
         }
     </script>
 
     <script src="js/common.js" defer></script>
+    <script src="js/bulk-reports.js" defer></script>
     <script src="js/admin.js" defer></script>
 </head>
 
@@ -98,6 +99,9 @@
                                 <div id="user-info-email" class="profile-info-item">...</div>
                                 <div id="user-info-role" class="profile-info-item">...</div>
                                 <hr>
+                                <button id="edit-profile-btn" class="profile-menu-item">
+                                    <i class="fas fa-user-edit"></i> Edit Profile
+                                </button>
                                 <button id="logout-btn" class="profile-menu-item">
                                     <i class="fas fa-sign-out-alt"></i> Logout
                                 </button>
@@ -112,6 +116,15 @@
             <div class="main-content">
 
                 <div id="dashboard" class="tab-content active">
+                    <div class="btn-group" style="margin-bottom: 16px;">
+                        <button type="button" class="btn btn-primary" id="open-admin-early-angel-btn">
+                            <i class="fas fa-star"></i> Early Angel Portal
+                        </button>
+                        <button type="button" class="btn btn-success" id="open-admin-vbs-btn">
+                            <i class="fas fa-church"></i> VBS Class Portal
+                        </button>
+                    </div>
+
                     <div class="card">
                         <div class="card-header">
                             <h2 class="card-title">Dashboard Overview</h2>
@@ -122,8 +135,16 @@
                                 <p class="stat-number" id="total-students">0</p>
                             </div>
                             <div class="card">
+                                <h3>Active Academic Year</h3>
+                                <p class="stat-number" id="admin-active-year-label">Not set</p>
+                            </div>
+                            <div class="card">
                                 <h3>Classes Held</h3>
                                 <p class="stat-number" id="classes-held">0</p>
+                            </div>
+                            <div class="card">
+                                <h3>Migration Status</h3>
+                                <p class="stat-number" id="admin-migration-status">Off</p>
                             </div>
                             <div class="card">
                                 <h3>Avg Attendance</h3>
@@ -251,13 +272,15 @@
                 </div>
 
                 <div id="assessments" class="tab-content">
-                    <div class="card">
+
+                    <div id="assessment-list-view" class="card">
                         <div class="card-header">
                             <h2 class="card-title">Assessment Management</h2>
                             <button class="btn btn-primary" id="new-assessment-btn" data-modal="assessment-modal">
                                 <i class="fas fa-plus-circle"></i> New Assessment
                             </button>
                         </div>
+
                         <div class="table-wrapper">
                             <table id="assessments-table" class="data-table">
                                 <thead>
@@ -269,10 +292,23 @@
                                         <th>Actions</th>
                                     </tr>
                                 </thead>
-                                <tbody></tbody>
+                                <tbody>
+                                </tbody>
                             </table>
                         </div>
                     </div>
+
+                    <div id="assessment-report-view" class="card" style="display: none;">
+                        <div class="card-header">
+                            <h2 class="card-title">Assessment Report</h2>
+                            <button class="btn btn-outline" onclick="closeAssessmentReport()">
+                                <i class="fas fa-arrow-left"></i> Back to List
+                            </button>
+                        </div>
+
+                        <div id="assessment-report-container"></div>
+                    </div>
+
                 </div>
 
                 <div id="reports" class="tab-content">
@@ -351,6 +387,28 @@
 
                             <div class="card card-nested">
                                 <div class="card-header">
+                                    <h3 class="card-title">Bulk Student Reports</h3>
+                                </div>
+                                <p><strong>Generate individual reports for all students in a class as a single
+                                        PDF.</strong></p>
+                                <p>Select a class to download a comprehensive PDF containing all student reports with
+                                    their assessment and attendance graphs.</p>
+                                <div class="form-group">
+                                    <label for="bulk-report-class-select">Select Class</label>
+                                    <select id="bulk-report-class-select">
+                                        <option value="">-- Select a class --</option>
+                                    </select>
+                                </div>
+                                <div class="btn-group">
+                                    <button class="btn btn-primary" id="generate-bulk-reports-btn"
+                                        onclick="generateAndDownloadBulkClassReports()">
+                                        <i class="fas fa-file-pdf"></i> Generate & Download Reports
+                                    </button>
+                                </div>
+                            </div>
+
+                            <div class="card card-nested">
+                                <div class="card-header">
                                     <h3 class="card-title">Data Export & Backup</h3>
                                 </div>
                                 <div class="btn-group">
@@ -362,6 +420,126 @@
                                     </button>
                                     <button class="btn btn-primary" id="export-full-backup-json">
                                         <i class="fas fa-download"></i> Full JSON Backup
+                                    </button>
+                                </div>
+                            </div>
+
+                            <div class="card card-nested">
+                                <div class="card-header">
+                                    <h3 class="card-title">Academic Year Management</h3>
+                                </div>
+
+                                <div class="form-group">
+                                    <label>Current Active Academic Year</label>
+                                    <div id="active-academic-year-current">Not set</div>
+                                </div>
+
+                                <div class="grid">
+                                    <div class="form-group">
+                                        <label for="active-academic-year-select">Set Active Academic Year</label>
+                                        <select id="active-academic-year-select">
+                                            <option value="">-- Select an academic year --</option>
+                                        </select>
+                                    </div>
+                                    <div class="form-group" style="display:flex; align-items:flex-end;">
+                                        <button class="btn btn-primary" id="save-active-academic-year-btn"
+                                            type="button">
+                                            <i class="fas fa-check"></i> Set Active Year
+                                        </button>
+                                    </div>
+                                </div>
+
+                                <hr class="section-divider">
+
+                                <form id="academic-year-form">
+                                    <h4 id="academic-year-form-title">Create / Update Academic Year</h4>
+                                    <div class="grid">
+                                        <div class="form-group">
+                                            <label for="academic-year-id-input">Year ID (e.g., 2026-2027)</label>
+                                            <input type="text" id="academic-year-id-input" placeholder="2026-2027"
+                                                required>
+                                        </div>
+                                        <div class="form-group">
+                                            <label for="academic-year-label-input">Display Label</label>
+                                            <input type="text" id="academic-year-label-input"
+                                                placeholder="Academic Year 2026-2027">
+                                        </div>
+                                    </div>
+                                    <div class="grid">
+                                        <div class="form-group">
+                                            <label for="academic-year-start-input">Start Date</label>
+                                            <input type="date" id="academic-year-start-input" required>
+                                        </div>
+                                        <div class="form-group">
+                                            <label for="academic-year-end-input">End Date</label>
+                                            <input type="date" id="academic-year-end-input" required>
+                                        </div>
+                                    </div>
+                                    <div class="grid">
+                                        <div class="form-group">
+                                            <label for="academic-year-previous-select">Previous Academic Year
+                                                (Optional)</label>
+                                            <select id="academic-year-previous-select">
+                                                <option value="">-- None --</option>
+                                            </select>
+                                        </div>
+                                        <div class="form-group"
+                                            style="display:flex; align-items:center; gap:10px; margin-top:30px;">
+                                            <input type="checkbox" id="academic-year-migration-enabled">
+                                            <label for="academic-year-migration-enabled" style="margin:0;">Enable
+                                                faculty migration from previous year</label>
+                                        </div>
+                                    </div>
+                                    <div class="btn-group">
+                                        <button type="submit" class="btn btn-primary" id="save-academic-year-btn">
+                                            <i class="fas fa-save"></i> Save Academic Year
+                                        </button>
+                                        <button type="button" class="btn btn-secondary"
+                                            id="cancel-academic-year-edit-btn" style="display:none;">
+                                            <i class="fas fa-times"></i> Cancel Edit
+                                        </button>
+                                        <button type="button" class="btn btn-warning" id="backfill-academic-year-btn">
+                                            <i class="fas fa-database"></i> Backfill Legacy Data to Active Year
+                                        </button>
+                                    </div>
+                                </form>
+
+                                <div class="table-wrapper">
+                                    <table id="academic-years-table" class="data-table">
+                                        <thead>
+                                            <tr>
+                                                <th>ID</th>
+                                                <th>Label</th>
+                                                <th>Start</th>
+                                                <th>End</th>
+                                                <th>Previous</th>
+                                                <th>Migration</th>
+                                                <th>Status</th>
+                                                <th>Actions</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody></tbody>
+                                    </table>
+                                </div>
+
+                                <hr class="section-divider">
+                                <h4>Faculty Migration Wizard</h4>
+                                <p style="color: var(--text-color-light); margin-bottom: 15px;">
+                                    Enable migration on an active year, then faculty can import students from the
+                                    previous year using the Faculty Portal.
+                                </p>
+                                <div class="form-group">
+                                    <label for="migration-enable-year-select">Select Year to Enable Migration</label>
+                                    <select id="migration-enable-year-select">
+                                        <option value="">-- Select --</option>
+                                    </select>
+                                </div>
+                                <div class="btn-group">
+                                    <button class="btn btn-warning" id="enable-migration-btn" type="button">
+                                        <i class="fas fa-arrow-right"></i> Enable Migration for Selected Year
+                                    </button>
+                                    <button class="btn btn-secondary" id="disable-migration-btn" type="button">
+                                        <i class="fas fa-times"></i> Disable Migration
                                     </button>
                                 </div>
                             </div>
@@ -428,6 +606,10 @@
                                 </form>
 
                                 <h4>Existing Accounts</h4>
+                                <p id="faculty-assignment-active-year"
+                                    style="margin-bottom: 10px; color: var(--text-color-light);">
+                                    Active year faculty-class assignment: loading...
+                                </p>
                                 <div class="table-wrapper">
                                     <table id="user-roles-table" class="data-table">
                                         <thead>
@@ -641,46 +823,6 @@
             </div>
         </div>
     </div>
-    <div id="assessments" class="tab-content">
-
-        <div id="assessment-list-view" class="card">
-            <div class="card-header">
-                <h2 class="card-title">Assessment Management</h2>
-                <button class="btn btn-primary" id="new-assessment-btn" data-modal="assessment-modal">
-                    <i class="fas fa-plus-circle"></i> New Assessment
-                </button>
-            </div>
-
-            <div class="table-wrapper">
-                <table id="assessments-table" class="data-table">
-                    <thead>
-                        <tr>
-                            <th>Name</th>
-                            <th>Date</th>
-                            <th>Total Marks</th>
-                            <th>Students Recorded</th>
-                            <th>Actions</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                    </tbody>
-                </table>
-            </div>
-        </div>
-
-        <div id="assessment-report-view" class="card" style="display: none;">
-            <div class="card-header">
-                <h2 class="card-title">Assessment Report</h2>
-                <button class="btn btn-outline" onclick="closeAssessmentReport()">
-                    <i class="fas fa-arrow-left"></i> Back to List
-                </button>
-            </div>
-
-            <div id="assessment-report-container"></div>
-        </div>
-
-    </div>
-
     <div id="scores-modal" class="modal">
         <div class="modal-content">
             <div class="modal-header">
@@ -726,6 +868,43 @@
                 <button class="close-btn" id="close-view-modal">&times;</button>
             </div>
             <div class="modal-body" id="student-details-content"></div>
+        </div>
+    </div>
+
+    <div id="admin-profile-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Edit My Profile</h3>
+                <button class="close-btn" id="close-admin-profile-modal-btn">&times;</button>
+            </div>
+            <div class="modal-body">
+                <form id="admin-profile-form">
+                    <div class="grid">
+                        <div class="form-group">
+                            <label for="admin-profile-display-name">Display Name *</label>
+                            <input type="text" id="admin-profile-display-name" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="admin-profile-phone">Contact Phone</label>
+                            <input type="tel" id="admin-profile-phone">
+                        </div>
+                    </div>
+                    <div class="grid">
+                        <div class="form-group">
+                            <label>Role</label>
+                            <div id="admin-profile-role" class="text-large font-bold">Administrator</div>
+                        </div>
+                        <div class="form-group">
+                            <label>Login Email</label>
+                            <div id="admin-profile-email" class="text-large font-bold">...</div>
+                        </div>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-outline" id="cancel-admin-profile-edit-btn" type="button">Cancel</button>
+                <button class="btn btn-primary" id="save-admin-profile-btn" type="button">Save Profile</button>
+            </div>
         </div>
     </div>
 </body>
