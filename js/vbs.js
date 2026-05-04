@@ -342,6 +342,28 @@ async function editPortalStudent(id) {
     };
 
     try {
+        // If class changed, delete old attendance records to prevent orphaned data
+        const oldClassId = String(student.classId || '');
+        const newClassId = String(result.value.classId || '');
+        const studentId = String(student.studentId || '');
+        
+        if (oldClassId && oldClassId !== newClassId && studentId) {
+            const recordsToDelete = (VBS_STATE.portalAttendance || []).filter(att =>
+                String(att.classId || '') === oldClassId && String(att.studentId || '') === studentId
+            );
+            
+            for (const record of recordsToDelete) {
+                try {
+                    const attendanceId = String(record.id || '');
+                    if (attendanceId) {
+                        await deleteDoc(doc(window.db, 'vbs_portal', getPortalDocId(), 'attendance', attendanceId));
+                    }
+                } catch (delErr) {
+                    console.warn('Failed to delete orphaned attendance record:', delErr);
+                }
+            }
+        }
+
         await setDoc(doc(window.db, 'vbs_portal', getPortalDocId(), 'students', id), updated, { merge: true });
         VBS_STATE.portalRoster = (VBS_STATE.portalRoster || []).map(item => String(item.id) === String(id) ? updated : item);
         renderPortalRosterTable();
@@ -536,6 +558,7 @@ function setupUiListeners() {
     document.getElementById('vbs-attendance-search')?.addEventListener('input', renderAttendanceTable);
     document.getElementById('vbs-attendance-sort')?.addEventListener('change', renderAttendanceTable);
     document.querySelector('#vbs-attendance-table tbody')?.addEventListener('click', handleAttendanceActionClick);
+    document.getElementById('vbs-quick-add-student-btn')?.addEventListener('click', quickAddStudentAndMarkNow);
     document.getElementById('vbs-save-attendance-btn')?.addEventListener('click', saveAttendanceForVisibleRows);
 
     document.getElementById('vbs-today-report-date-select')?.addEventListener('change', handleTodayReportDateChange);
@@ -871,6 +894,121 @@ async function editAttendanceEntry(attendanceId) {
     } catch (err) {
         console.error(err);
         showError('Failed to update attendance entry: ' + err.message);
+    }
+}
+
+async function quickAddStudentAndMarkNow() {
+    if (!VBS_STATE.portalActive) {
+        return showError('Portal mode must be active to use this feature.');
+    }
+
+    const result = await Swal.fire({
+        title: 'Add Student & Mark Attendance',
+        html: `
+            <input id="qa-student-name" class="swal2-input" placeholder="Student name" autofocus>
+            <select id="qa-student-class" class="swal2-input"></select>
+            <input id="qa-student-father" class="swal2-input" placeholder="Father / Guardian (optional)">
+            <input id="qa-student-phone" class="swal2-input" placeholder="Phone (optional)">
+            <div style="margin: 12px 0;">
+                <label style="font-weight: 500; color: #333;">Mark as:</label>
+                <select id="qa-attendance-status" class="swal2-input">
+                    <option value="Present">Present</option>
+                    <option value="Absent">Absent</option>
+                </select>
+            </div>
+        `,
+        didOpen: () => {
+            const classSelect = document.getElementById('qa-student-class');
+            if (classSelect) {
+                classSelect.innerHTML = '<option value="">Select class</option>';
+                VBS_FIXED_GRADES.forEach(grade => {
+                    const option = document.createElement('option');
+                    option.value = grade;
+                    option.textContent = grade;
+                    classSelect.appendChild(option);
+                });
+            }
+        },
+        focusConfirm: false,
+        showCancelButton: true,
+        confirmButtonText: 'Add & Mark',
+        preConfirm: () => ({
+            name: String(document.getElementById('qa-student-name')?.value || '').trim(),
+            classId: String(document.getElementById('qa-student-class')?.value || '').trim(),
+            father: String(document.getElementById('qa-student-father')?.value || '').trim(),
+            phone: String(document.getElementById('qa-student-phone')?.value || '').trim(),
+            status: String(document.getElementById('qa-attendance-status')?.value || 'Present').trim(),
+        })
+    });
+
+    if (!result.isConfirmed) return;
+
+    if (!result.value?.name || !result.value?.classId) {
+        return showError('Student name and class are required.');
+    }
+
+    const studentId = slugify(result.value.name) + '_' + Date.now();
+    const docId = `${result.value.classId}_${studentId}`;
+
+    const studentPayload = {
+        id: docId,
+        name: result.value.name,
+        fullName: result.value.name,
+        classId: result.value.classId,
+        studentId,
+        father: result.value.father || '',
+        phone: result.value.phone || '',
+        vbsYear: VBS_YEAR_FIXED,
+        academicYearId: VBS_STATE.activeAcademicYearId || null,
+        createdAt: new Date().toISOString(),
+        createdByUid: VBS_STATE.user?.uid || null,
+    };
+
+    const attendanceDate = String(document.getElementById('vbs-attendance-date')?.value || '').trim() || toYmd();
+    const attendanceDocId = getAttendanceDocId(result.value.classId, studentId, attendanceDate);
+
+    const attendancePayload = {
+        id: attendanceDocId,
+        vbsYear: VBS_YEAR_FIXED,
+        academicYearId: VBS_STATE.activeAcademicYearId || null,
+        classId: result.value.classId,
+        studentId,
+        studentName: result.value.name,
+        status: result.value.status,
+        vbsDate: attendanceDate,
+        createdAt: new Date().toISOString(),
+        createdByUid: VBS_STATE.user?.uid || null,
+        createdByRole: VBS_STATE.roleData?.role || null,
+    };
+
+    try {
+        const portalDocId = getPortalDocId();
+        
+        // Add student to roster
+        await setDoc(doc(window.db, 'vbs_portal', portalDocId, 'students', docId), studentPayload, { merge: false });
+        
+        // Mark attendance immediately
+        await setDoc(doc(window.db, 'vbs_portal', portalDocId, 'attendance', attendanceDocId), attendancePayload, { merge: true });
+
+        // Update local state
+        VBS_STATE.portalRoster = [studentPayload, ...(VBS_STATE.portalRoster || [])];
+        VBS_STATE.portalAttendance = [attendancePayload, ...(VBS_STATE.portalAttendance || [])];
+
+        await createAuditLog('vbs_quick_add_student', {
+            docId,
+            studentId,
+            classId: result.value.classId,
+            attendanceDate,
+            attendanceStatus: result.value.status,
+        });
+
+        // Refresh UI
+        renderAttendanceTable();
+        refreshTodayReportDateOptions();
+        showSuccess('Added & Marked', `${result.value.name} added to class ${result.value.classId} and marked ${result.value.status} for ${attendanceDate}.`);
+    } catch (err) {
+        console.error(err);
+        showError('Failed to add student and mark attendance: ' + err.message);
     }
 }
 
@@ -1288,7 +1426,9 @@ async function generateTodayReport() {
         y = addPdfHeader(doc, `VBS Today Detailed List - ${className}`, formatDate(reportDate));
         doc.setFont('helvetica', 'bold');
         doc.setFontSize(11);
-        doc.text(`Students: ${section.studentRows.length} | Present first, then Absent`, 10, y);
+        const sectionPresent = section.studentRows.filter(r => r.status === 'Present').length;
+        const sectionAbsent = section.studentRows.filter(r => r.status === 'Absent').length;
+        doc.text(`Students: ${section.studentRows.length} | Present: ${sectionPresent} | Absent: ${sectionAbsent}`, 10, y);
         y += 6;
 
         drawPdfTable(
