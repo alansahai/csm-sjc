@@ -346,12 +346,12 @@ async function editPortalStudent(id) {
         const oldClassId = String(student.classId || '');
         const newClassId = String(result.value.classId || '');
         const studentId = String(student.studentId || '');
-        
+
         if (oldClassId && oldClassId !== newClassId && studentId) {
             const recordsToDelete = (VBS_STATE.portalAttendance || []).filter(att =>
                 String(att.classId || '') === oldClassId && String(att.studentId || '') === studentId
             );
-            
+
             for (const record of recordsToDelete) {
                 try {
                     const attendanceId = String(record.id || '');
@@ -563,6 +563,7 @@ function setupUiListeners() {
 
     document.getElementById('vbs-today-report-date-select')?.addEventListener('change', handleTodayReportDateChange);
     document.getElementById('vbs-generate-today-report-btn')?.addEventListener('click', generateTodayReport);
+    document.getElementById('vbs-remove-attendance-range-btn')?.addEventListener('click', removeAttendanceByDateRange);
     document.getElementById('vbs-generate-detailed-report-btn')?.addEventListener('click', generateDetailedReport);
 
     // Turnover portal UI
@@ -983,10 +984,10 @@ async function quickAddStudentAndMarkNow() {
 
     try {
         const portalDocId = getPortalDocId();
-        
+
         // Add student to roster
         await setDoc(doc(window.db, 'vbs_portal', portalDocId, 'students', docId), studentPayload, { merge: false });
-        
+
         // Mark attendance immediately
         await setDoc(doc(window.db, 'vbs_portal', portalDocId, 'attendance', attendanceDocId), attendancePayload, { merge: true });
 
@@ -1150,7 +1151,6 @@ function refreshTodayReportDateOptions() {
 
     select.value = selectedDate;
     VBS_STATE.lastTodayReportDate = selectedDate;
-
     if (note) {
         note.textContent = uniqueDates.includes(today)
             ? 'Default is current date. Selecting another date will show a warning.'
@@ -1184,6 +1184,103 @@ async function handleTodayReportDateChange(e) {
     }
 
     VBS_STATE.lastTodayReportDate = selectedDate;
+}
+
+async function removeAttendanceByDateRange() {
+    const sourceAttendance = VBS_STATE.portalActive ? (VBS_STATE.portalAttendance || []) : (VBS_STATE.attendance || []);
+    if (sourceAttendance.length === 0) {
+        return showError('No attendance entries available to remove.');
+    }
+
+    const uniqueDates = [...new Set(sourceAttendance.map(item => String(item.vbsDate || '').trim()).filter(Boolean))]
+        .sort((a, b) => String(a).localeCompare(String(b)));
+
+    const defaultDate = String(document.getElementById('vbs-today-report-date-select')?.value || uniqueDates[0] || '').trim();
+    const result = await Swal.fire({
+        title: 'Remove Test Attendance',
+        html: `
+            <div style="text-align:left; margin-bottom: 10px; color:#555; font-size:14px;">
+                Remove attendance records for the selected date range. This permanently deletes them from Firestore.
+            </div>
+            <label style="display:block; text-align:left; font-size:13px; margin-bottom:4px;">From Date</label>
+            <input id="vbs-remove-attendance-from" type="date" class="swal2-input" value="${escapeHtml(defaultDate)}">
+            <label style="display:block; text-align:left; font-size:13px; margin-bottom:4px;">To Date</label>
+            <input id="vbs-remove-attendance-to" type="date" class="swal2-input" value="${escapeHtml(defaultDate)}">
+        `,
+        showCancelButton: true,
+        confirmButtonText: 'Remove',
+        cancelButtonText: 'Cancel',
+        focusConfirm: false,
+        preConfirm: () => ({
+            fromDate: String(document.getElementById('vbs-remove-attendance-from')?.value || '').trim(),
+            toDate: String(document.getElementById('vbs-remove-attendance-to')?.value || '').trim(),
+        })
+    });
+
+    if (!result.isConfirmed) return;
+
+    const fromDate = result.value?.fromDate;
+    const toDate = result.value?.toDate;
+    if (!fromDate || !toDate) {
+        return showError('Select both from and to dates.');
+    }
+
+    if (String(fromDate).localeCompare(String(toDate)) > 0) {
+        return showError('From Date cannot be after To Date.');
+    }
+
+    const entriesToDelete = sourceAttendance.filter(item => {
+        const dateValue = String(item.vbsDate || '').trim();
+        return dateValue && dateValue >= fromDate && dateValue <= toDate;
+    });
+
+    if (entriesToDelete.length === 0) {
+        return showError('No attendance entries found in the selected range.');
+    }
+
+    const confirmDelete = await Swal.fire({
+        icon: 'warning',
+        title: 'Confirm Deletion',
+        text: `Delete ${entriesToDelete.length} attendance record(s) from ${formatDate(fromDate)} to ${formatDate(toDate)}?`,
+        showCancelButton: true,
+        confirmButtonText: 'Yes, delete them',
+        cancelButtonText: 'Cancel'
+    });
+
+    if (!confirmDelete.isConfirmed) return;
+
+    try {
+        const portalDocId = getPortalDocId();
+        await Promise.all(entriesToDelete.map(item => {
+            if (!item.id) return Promise.resolve();
+            if (VBS_STATE.portalActive) {
+                return deleteDoc(doc(window.db, 'vbs_portal', portalDocId, 'attendance', item.id));
+            }
+            return deleteDoc(doc(window.db, 'vbsAttendance', item.id));
+        }));
+
+        const remainingAttendance = sourceAttendance.filter(item => !entriesToDelete.some(target => String(target.id || '') === String(item.id || '')));
+        if (VBS_STATE.portalActive) {
+            VBS_STATE.portalAttendance = remainingAttendance;
+        } else {
+            VBS_STATE.attendance = remainingAttendance;
+        }
+
+        await createAuditLog('vbs_attendance_range_deleted', {
+            fromDate,
+            toDate,
+            deletedCount: entriesToDelete.length,
+            portalMode: VBS_STATE.portalActive,
+            vbsYear: VBS_YEAR_FIXED,
+        });
+
+        renderAttendanceTable();
+        refreshTodayReportDateOptions();
+        showSuccess('Removed', `${entriesToDelete.length} attendance record(s) deleted.`);
+    } catch (err) {
+        console.error(err);
+        showError('Failed to remove attendance records: ' + err.message);
+    }
 }
 
 function buildTodayReportData(reportDate) {
