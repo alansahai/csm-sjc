@@ -722,14 +722,29 @@ function drawLandscapeMatrixTable(doc, columns, rows, startY, widths) {
     const headerHeight = 9;
     const pageBottom = 195;
 
-    const drawRow = (cells, y, isHeader = false) => {
+    const drawRow = (cells, y, isHeader = false, highlightedColumns = []) => {
         let x = margin;
+        const cellHeight = isHeader ? headerHeight : rowHeight;
+        const isFullRowHighlighted = !isHeader && cells.length > 0 && highlightedColumns.length === cells.length;
+
+        if (isFullRowHighlighted) {
+            const totalWidth = widths.slice(0, cells.length).reduce((sum, value) => sum + Number(value || 20), 0);
+            doc.setFillColor(220, 245, 220);
+            doc.rect(margin, y, totalWidth, cellHeight, 'F');
+        }
+
         doc.setFont('helvetica', isHeader ? 'bold' : 'normal');
         doc.setFontSize(8);
 
         cells.forEach((cell, index) => {
             const width = Number(widths[index] || 20);
-            doc.rect(x, y, width, isHeader ? headerHeight : rowHeight);
+            const shouldHighlight = !isHeader && highlightedColumns.includes(index);
+            if (shouldHighlight && !isFullRowHighlighted) {
+                doc.setFillColor(220, 245, 220);
+                doc.rect(x, y, width, cellHeight, 'FD');
+            } else {
+                doc.rect(x, y, width, cellHeight);
+            }
             doc.text(normalizePdfText(cell), x + 1.5, y + (isHeader ? 5.5 : 4.8), { maxWidth: width - 3 });
             x += width;
         });
@@ -740,6 +755,11 @@ function drawLandscapeMatrixTable(doc, columns, rows, startY, widths) {
     y += headerHeight;
 
     rows.forEach(row => {
+        const rowCells = Array.isArray(row) ? row : (Array.isArray(row?.cells) ? row.cells : []);
+        const highlightedColumns = Array.isArray(row?.highlightColumns)
+            ? row.highlightColumns
+            : (row?.highlightAll ? rowCells.map((_, index) => index) : []);
+
         if (y + rowHeight > pageBottom) {
             doc.addPage('a4', 'l');
             y = 12;
@@ -747,7 +767,7 @@ function drawLandscapeMatrixTable(doc, columns, rows, startY, widths) {
             y += headerHeight;
         }
 
-        drawRow(row, y, false);
+        drawRow(rowCells, y, false, highlightedColumns);
         y += rowHeight;
     });
 }
@@ -1619,11 +1639,17 @@ async function generateDetailedReport() {
 
             const columns = ['Student Name', ...chunkDates.map(formatMatrixDateLabel), 'Attendance %'];
             const widths = [nameWidth, ...chunkDates.map(() => dateWidth), percentageWidth];
-            const rows = section.studentRows.map(student => [
-                student.studentName,
-                ...chunkDates.map(dateValue => student.cells[dateValue] || 'A'),
-                `${String(student.percentage || 0).replace(/\.0$/, '')}%`
-            ]);
+            const rows = section.studentRows.map(student => {
+                const percentageValue = Number(student.percentage || 0);
+                return {
+                    cells: [
+                        student.studentName,
+                        ...chunkDates.map(dateValue => student.cells[dateValue] || 'A'),
+                        `${String(student.percentage || 0).replace(/\.0$/, '')}%`
+                    ],
+                    highlightAll: percentageValue >= 100,
+                };
+            });
 
             drawLandscapeMatrixTable(doc, columns, rows, startY, widths);
         }
