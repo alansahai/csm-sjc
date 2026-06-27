@@ -774,45 +774,91 @@ async function downloadContainerAsPDF(containerId, filename) {
 
 /**
  * Generate a standalone PDF from an HTML string — a separate report document,
- * NOT a browser print of the current page. The markup is rendered into an
- * off-screen holder (kept in the DOM so html2canvas can paint it), exported
- * via html2pdf, then removed.
+ * NOT a browser print of the current page.
+ *
+ * Key reliability rules learned the hard way:
+ *  - html2canvas does NOT reliably capture `position:fixed` or far-off-screen
+ *    elements (they come out blank). So the content is rendered in NORMAL FLOW
+ *    inside an on-screen wrapper.
+ *  - A single huge canvas (e.g. a whole class of certificates) exceeds the
+ *    browser's max canvas size and fails. So when the markup contains explicit
+ *    page elements (`.pdf-page` / `.cert-page`), each is rendered to its own
+ *    canvas and added as a separate jsPDF page.
  *
  * @param {string} innerHtml  Report body markup.
  * @param {string} filename   e.g. "Todays_Attendance.pdf"
  * @param {'portrait'|'landscape'} orientation
  */
 async function downloadHtmlAsPdf(innerHtml, filename, orientation = 'portrait') {
-    if (typeof html2pdf === 'undefined') {
-        console.error('html2pdf library not loaded');
+    const haveJsPdf = !!(window.jspdf && window.jspdf.jsPDF);
+    const haveH2c   = typeof window.html2canvas === 'function';
+    if (typeof html2pdf === 'undefined' && !(haveJsPdf && haveH2c)) {
         if (typeof showError === 'function') showError('PDF library not loaded. Please reload and try again.');
         return;
     }
-    const holder = document.createElement('div');
-    holder.style.position = 'fixed';
-    holder.style.left = '-10000px';
-    holder.style.top = '0';
-    holder.style.width = orientation === 'landscape' ? '297mm' : '210mm';
-    holder.style.background = '#ffffff';
-    holder.innerHTML = innerHtml;
-    document.body.appendChild(holder);
 
-    const opt = {
-        margin: 0,
-        filename,
-        image: { type: 'jpeg', quality: 0.98 },
-        html2canvas: { scale: 2, useCORS: true, logging: false, backgroundColor: '#ffffff' },
-        jsPDF: { unit: 'mm', format: 'a4', orientation },
-        pagebreak: { mode: ['css', 'legacy'] }
-    };
+    const widthMm  = orientation === 'landscape' ? 297 : 210;
+    const heightMm = orientation === 'landscape' ? 210 : 297;
+
+    // Visible, NORMAL-FLOW wrapper so html2canvas can actually paint the content.
+    const wrapper = document.createElement('div');
+    wrapper.style.cssText = 'position:fixed;inset:0;z-index:2147483600;background:#ffffff;overflow:auto;';
+    const banner = document.createElement('div');
+    banner.style.cssText = 'position:sticky;top:0;font-family:Arial,sans-serif;color:#4f46e5;font-weight:600;text-align:center;padding:10px;background:#eef2ff;';
+    banner.textContent = '⏳ Generating PDF…';
+    const holder = document.createElement('div');
+    holder.style.cssText = `width:${widthMm}mm;margin:0 auto;background:#ffffff;`;
+    holder.innerHTML = innerHtml;
+    wrapper.appendChild(banner);
+    wrapper.appendChild(holder);
+    document.body.appendChild(wrapper);
+    window.scrollTo(0, 0);
+
+    // Let layout + fonts settle before capture.
+    await new Promise(r => setTimeout(r, 200));
 
     try {
-        await html2pdf().set(opt).from(holder).save();
+        const pages = holder.querySelectorAll('.pdf-page, .cert-page');
+
+        if (pages.length > 0 && haveJsPdf && haveH2c) {
+            // Multi-page: render each page element to its own canvas → avoids the
+            // giant-canvas size limit and guarantees correct paging.
+            const { jsPDF } = window.jspdf;
+            const pdf = new jsPDF({ unit: 'mm', format: 'a4', orientation });
+            for (let i = 0; i < pages.length; i++) {
+                banner.textContent = `⏳ Generating PDF… (${i + 1}/${pages.length})`;
+                const canvas = await window.html2canvas(pages[i], { scale: 2, useCORS: true, backgroundColor: '#ffffff' });
+                const imgData = canvas.toDataURL('image/jpeg', 0.95);
+                if (i > 0) pdf.addPage();
+                pdf.addImage(imgData, 'JPEG', 0, 0, widthMm, heightMm);
+            }
+            pdf.save(filename);
+        } else if (typeof html2pdf !== 'undefined') {
+            // Single flowing document (e.g. a long attendance table) — html2pdf
+            // slices it across pages.
+            await html2pdf().set({
+                margin: 0,
+                filename,
+                image: { type: 'jpeg', quality: 0.95 },
+                html2canvas: { scale: 2, useCORS: true, logging: false, backgroundColor: '#ffffff' },
+                jsPDF: { unit: 'mm', format: 'a4', orientation },
+                pagebreak: { mode: ['css', 'legacy'] }
+            }).from(holder).save();
+        } else {
+            // Fallback: single-canvas via jsPDF directly.
+            const { jsPDF } = window.jspdf;
+            const pdf = new jsPDF({ unit: 'mm', format: 'a4', orientation });
+            const canvas = await window.html2canvas(holder, { scale: 2, useCORS: true, backgroundColor: '#ffffff' });
+            const imgData = canvas.toDataURL('image/jpeg', 0.95);
+            const imgH = canvas.height * widthMm / canvas.width;
+            pdf.addImage(imgData, 'JPEG', 0, 0, widthMm, imgH);
+            pdf.save(filename);
+        }
     } catch (err) {
         console.error('PDF generation error:', err);
         if (typeof showError === 'function') showError('Failed to generate PDF: ' + err.message);
     } finally {
-        holder.remove();
+        wrapper.remove();
     }
 }
 window.downloadHtmlAsPdf = downloadHtmlAsPdf;

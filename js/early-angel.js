@@ -1321,8 +1321,11 @@ function renderClassDatalist() {
     });
 }
 
+let _eaSaving = false; // guards against rapid double-submit creating duplicates
+
 async function saveEntry(e) {
     e.preventDefault();
+    if (_eaSaving) return;
 
     const entryDate = document.getElementById('ea-date-input')?.value || new Date().toISOString().slice(0, 10);
 
@@ -1370,52 +1373,67 @@ async function saveEntry(e) {
     const nowIso = new Date().toISOString();
     const entryTime = new Date(nowIso).toTimeString().slice(0, 8); // HH:MM:SS for Postgres TIME
 
-    showSpinner();
+    // Duplicate check in-memory (entries are loaded globally) — avoids a DB round-trip.
+    const isDup = (EA_STATE.entries || []).some(en =>
+        String(en.classId) === String(classId) &&
+        String(en.studentId) === String(studentId) &&
+        String(en.entryDate) === String(entryDate));
+    if (isDup) {
+        return showError('Only one entry per day is allowed for a student. This entry already exists.');
+    }
+
+    const entryPayload = withAcademicYear({
+        classId,
+        studentId,
+        studentName,
+        category: 'Early Angel',
+        points: 1,
+        entryDate,
+        entryTime,
+        createdAt: nowIso,
+    });
+
+    _eaSaving = true;
     try {
-        // Check for duplicate: same student, same date
-        const { query: q, collection: col, where: wh, getDocs } = window;
-        const dupSnap = await getDocs(q(col(window.db, 'earlyAngelEntries'),
-            wh('classId', '==', classId),
-            wh('studentId', '==', studentId),
-            wh('entryDate', '==', entryDate)));
-        if (!dupSnap.empty) {
-            return showError('Only one entry per day is allowed for a student. This entry already exists.');
-        }
+        const saved = await window.addDoc(window.collection(window.db, 'earlyAngelEntries'), entryPayload);
 
-        const entryPayload = withAcademicYear({
-            classId,
-            studentId,
-            studentName,
-            category: 'Early Angel',
-            points: 1,
-            entryDate,
-            entryTime,
-            createdAt: nowIso,
-        });
+        // Instant UI update — don't wait for the realtime/poll listener.
+        EA_STATE.entries.push({ id: saved?.id, ...entryPayload });
+        rebuildLeaderboardFromEntries();
+        rebuildSearchIndex();
+        renderAllTables();
+        refreshInstantReportDateOptions();
 
-        const { addDoc: aDoc, collection: col2 } = window;
-        const saved = await aDoc(col2(window.db, 'earlyAngelEntries'), entryPayload);
-
-        createAuditLog('early_angel_entry_saved', {
-            entryId: saved?.id || null,
-            classId,
-            studentId,
-            studentName,
-            entryDate,
-            entryTime,
-            academicYearId: EA_STATE.activeAcademicYearId,
-        });
-
-        showSuccess('Entry saved', `${studentName} marked for ${formatDate(entryDate)} at ${entryTime}.`);
-
+        // Reset for the next entry and show a lightweight, non-blocking toast.
         document.getElementById('ea-entry-form')?.reset();
         clearStudentSelection();
         setDateToToday();
+        eaToast(`${studentName} marked ✓`);
+
+        // Audit log in the background (don't block the UI).
+        createAuditLog('early_angel_entry_saved', {
+            entryId: saved?.id || null, classId, studentId, studentName,
+            entryDate, entryTime, academicYearId: EA_STATE.activeAcademicYearId,
+        });
     } catch (err) {
         showError('Failed to save entry: ' + err.message);
     } finally {
-        hideSpinner();
+        _eaSaving = false;
     }
+}
+
+// Lightweight non-blocking toast for the high-frequency Early Angel entry flow.
+function eaToast(title, icon = 'success') {
+    if (typeof Swal === 'undefined') return;
+    Swal.fire({
+        toast: true,
+        position: 'top-end',
+        icon,
+        title,
+        showConfirmButton: false,
+        timer: 1100,
+        timerProgressBar: true,
+    });
 }
 
 function setupUiListeners() {

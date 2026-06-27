@@ -5518,12 +5518,15 @@ async function generateCertificates() {
             <p style="margin:2px 0 0;font-size:11px;color:#555;letter-spacing:0.5px;">${escapeHtml(role)}</p>
         </div>`;
 
-    // Each certificate fills one landscape A4 page (297mm × 210mm).
-    const certs = eligible.map(s => {
+    // Each certificate fills one landscape A4 page. Height is kept just under the
+    // 210mm page height to avoid a sub-pixel overflow spilling a blank page, and the
+    // page-break is applied only BETWEEN certs (not after the last → no trailing blank).
+    const certs = eligible.map((s, i) => {
+        const isLast = i === eligible.length - 1;
         const pct = window.calcStudentAttendancePct ? window.calcStudentAttendancePct(s.studentId, sessions, attendance) : null;
         const attendanceLine = certType === 'attendance'
             ? `<p style="font-size:14px;color:#666;margin:4px 0 0;">Attendance: ${pct !== null ? pct.toFixed(1) + '%' : 'N/A'}</p>` : '';
-        return `<div class="cert-page" style="width:297mm;height:210mm;box-sizing:border-box;padding:14mm;page-break-after:always;background:#fff;">
+        return `<div class="cert-page" style="width:297mm;height:210mm;box-sizing:border-box;padding:12mm;${isLast ? '' : 'page-break-after:always;'}background:#fff;">
             <div style="width:100%;height:100%;border:6px solid #4f46e5;border-radius:14px;box-sizing:border-box;padding:24px 48px;display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center;font-family:Georgia,serif;">
                 <p style="font-size:15px;letter-spacing:3px;color:#6366f1;text-transform:uppercase;margin:0 0 6px;">St. Jude's Catechism</p>
                 <h1 style="font-size:34px;color:#1e1b4b;margin:0 0 4px;">${certTitle}</h1>
