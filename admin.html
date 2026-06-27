@@ -8,37 +8,14 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.9.3/html2pdf.bundle.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⛪</text></svg>">
     <link rel="stylesheet" href="css/style.css">
 
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
 
-    <script src="/firebase.config.js"></script>
-    <script type="module">
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/12.5.0/firebase-app.js";
-        import {
-            getFirestore, collection, getDocs, query, where, addDoc,
-            setDoc, doc, getDoc, deleteDoc, onSnapshot, updateDoc,
-            deleteField, orderBy, limit, writeBatch, serverTimestamp, increment // <--- ADDED THIS
-        } from "https://www.gstatic.com/firebasejs/12.5.0/firebase-firestore.js";
-        import { getAuth, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/12.5.0/firebase-auth.js";
-
-        const firebaseConfig = window.__FIREBASE_CONFIG__;
-        if (!firebaseConfig) {
-            // ... error handling ...
-        } else {
-            const app = initializeApp(firebaseConfig);
-            const db = getFirestore(app);
-            const auth = getAuth(app);
-
-            // Expose to window
-            Object.assign(window, {
-                db, auth, collection, getDocs, query, where, addDoc, setDoc,
-                doc, getDoc, deleteDoc, onSnapshot, updateDoc, deleteField,
-                orderBy, limit, onAuthStateChanged, signOut,
-                writeBatch, serverTimestamp, increment // <--- ADDED THIS
-            });
-        }
-    </script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+    <script src="/supabase.config.js"></script>
+    <script src="js/supabase.js"></script>
 
     <script src="js/common.js" defer></script>
     <script src="js/bulk-reports.js" defer></script>
@@ -62,26 +39,50 @@
     </div>
 
     <div id="app-content" class="is-hidden">
-        <header>
-            <div class="container">
-                <div class="header-content">
-                    <div class="logo">
-                        <i class="fas fa-church"></i>
-                        <h1>Catechism Admin Panel</h1>
+        <div class="app-layout">
+            <aside class="sidebar" id="app-sidebar">
+                <div class="sidebar-header">
+                    <div class="sidebar-logo">
+                        <div class="sidebar-logo-icon"><i class="fas fa-church"></i></div>
+                        <div class="sidebar-logo-text">
+                            <span class="sidebar-logo-title">Catechism</span>
+                            <span class="sidebar-logo-subtitle">Admin Portal</span>
+                        </div>
                     </div>
-
-                    <nav>
-                        <ul>
-                            <li><a href="#" class="active" data-tab="dashboard">Dashboard</a></li>
-                            <li><a href="#" data-tab="students">Students</a></li>
-                            <li><a href="#" data-tab="attendance">Attendance</a></li>
-                            <li><a href="#" data-tab="assessments">Assessments</a></li>
-                            <li><a href="#" data-tab="reports">Reports</a></li>
-                            <li><a href="#" data-tab="admin-panel" id="nav-admin-panel">Admin Tools</a></li>
-                        </ul>
-                    </nav>
-
-                    <div class="header-actions">
+                </div>
+                <nav class="sidebar-nav">
+                    <span class="sidebar-nav-label">Main</span>
+                    <a href="#" class="sidebar-link active" data-tab="dashboard"><i class="fas fa-home"></i><span>Dashboard</span></a>
+                    <a href="#" class="sidebar-link" data-tab="students"><i class="fas fa-users"></i><span>Students</span></a>
+                    <a href="#" class="sidebar-link" data-tab="attendance"><i class="fas fa-calendar-check"></i><span>Attendance</span></a>
+                    <a href="#" class="sidebar-link" data-tab="assessments"><i class="fas fa-clipboard-list"></i><span>Assessments</span></a>
+                    <a href="#" class="sidebar-link" data-tab="reports"><i class="fas fa-chart-bar"></i><span>Reports</span></a>
+                    <a href="#" class="sidebar-link" data-tab="homework"><i class="fas fa-book-open"></i><span>Homework</span></a>
+                    <span class="sidebar-nav-label">Admin</span>
+                    <a href="#" class="sidebar-link" data-tab="admin-panel" id="nav-admin-panel"><i class="fas fa-cog"></i><span>Admin Tools</span></a>
+                    <span class="sidebar-nav-label">Tools &amp; Portals</span>
+                    <a href="early-angel.html" class="sidebar-link"><i class="fas fa-star"></i><span>Early Angel</span></a>
+                    <a href="vbs.html" class="sidebar-link"><i class="fas fa-church"></i><span>VBS Portal 2026</span></a>
+                </nav>
+                <div class="sidebar-footer">
+                    <div class="sidebar-user-block">
+                        <div class="sidebar-avatar"><i class="fas fa-user"></i></div>
+                        <div class="sidebar-user-info-block">
+                            <div class="sidebar-user-name" id="sidebar-user-email">Loading...</div>
+                            <div class="sidebar-user-role-label" id="sidebar-user-role">Admin</div>
+                        </div>
+                    </div>
+                    <button id="sidebar-logout-btn" class="sidebar-logout-btn" type="button">
+                        <i class="fas fa-sign-out-alt"></i><span>Logout</span>
+                    </button>
+                </div>
+            </aside>
+            <div class="sidebar-overlay" id="sidebar-overlay"></div>
+            <div class="main-area">
+                <header class="topbar">
+                    <button class="topbar-hamburger" id="topbar-hamburger" type="button"><i class="fas fa-bars"></i></button>
+                    <h1 class="topbar-title" id="topbar-title">Dashboard</h1>
+                    <div class="topbar-actions">
                         <div class="theme-switch-wrapper">
                             <label class="theme-switch" for="theme-toggle">
                                 <input type="checkbox" id="theme-toggle" />
@@ -92,28 +93,19 @@
                             </label>
                         </div>
                         <div class="profile-dropdown">
-                            <button id="profile-btn" class="profile-btn">
-                                <i class="fas fa-user-circle"></i>
-                            </button>
+                            <button id="profile-btn" class="profile-btn" type="button"><i class="fas fa-user"></i></button>
                             <div id="profile-menu" class="profile-menu is-hidden">
                                 <div id="user-info-email" class="profile-info-item">...</div>
                                 <div id="user-info-role" class="profile-info-item">...</div>
                                 <hr>
-                                <button id="edit-profile-btn" class="profile-menu-item">
-                                    <i class="fas fa-user-edit"></i> Edit Profile
-                                </button>
-                                <button id="logout-btn" class="profile-menu-item">
-                                    <i class="fas fa-sign-out-alt"></i> Logout
-                                </button>
+                                <button id="edit-profile-btn" class="profile-menu-item"><i class="fas fa-user-edit"></i> Edit Profile</button>
+                                <button id="logout-btn" class="profile-menu-item"><i class="fas fa-sign-out-alt"></i> Logout</button>
                             </div>
                         </div>
                     </div>
-                </div>
-            </div>
-        </header>
-
-        <div class="container">
-            <div class="main-content">
+                </header>
+                <main class="page-content">
+                <div class="main-content">
 
                 <div id="dashboard" class="tab-content active">
                     <div class="btn-group" style="margin-bottom: 16px;">
@@ -154,8 +146,43 @@
                                 <h3>Upcoming Sessions</h3>
                                 <p class="stat-number" id="upcoming-sessions">0</p>
                             </div>
+                            <div class="card">
+                                <h3>My Class</h3>
+                                <p class="stat-number" id="my-class-label">—</p>
+                            </div>
+                            <div class="card">
+                                <h3>Below 75% Attendance</h3>
+                                <p class="stat-number" style="color:var(--danger)" id="below-75-count">0</p>
+                            </div>
                         </div>
                     </div>
+
+                    <!-- A7: Class Performance Comparison Card -->
+                    <div class="card" id="class-performance-card">
+                        <div class="card-header">
+                            <h2 class="card-title">Class Performance Comparison</h2>
+                            <button class="btn btn-outline btn-sm" id="refresh-class-perf-btn">
+                                <i class="fas fa-sync"></i> Refresh
+                            </button>
+                        </div>
+                        <div class="table-wrapper">
+                            <table class="data-table">
+                                <thead>
+                                    <tr>
+                                        <th>Class</th>
+                                        <th>Students</th>
+                                        <th>Avg Attendance</th>
+                                        <th>At Risk (&lt;75%)</th>
+                                        <th>Avg Score %</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="class-performance-tbody">
+                                    <tr><td colspan="5">Loading...</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
                     <div class="card">
                         <div class="card-header">
                             <h2 class="card-title">Recent Activity</h2>
@@ -171,14 +198,22 @@
                         <div class="card-header">
                             <h2 class="card-title">Student Management</h2>
                             <div>
+                                <button class="btn btn-outline btn-sm" id="show-at-risk-btn">
+                                    <i class="fas fa-exclamation-triangle"></i> Show At-Risk Only
+                                </button>
                                 <button class="btn btn-primary" id="add-student-btn" data-modal="student-modal">
                                     <i class="fas fa-plus"></i> Add Student
                                 </button>
+                                <button type="button" class="btn btn-secondary" id="import-csv-btn-new">
+                                    <i class="fas fa-file-csv"></i> Import CSV
+                                </button>
                                 <button class="btn btn-outline" id="import-students-btn" data-modal="import-modal">
-                                    <i class="fas fa-file-import"></i> Import CSV
+                                    <i class="fas fa-file-import"></i> Legacy Import
                                 </button>
                             </div>
                         </div>
+                        <!-- A1: Class filter bar -->
+                        <div class="class-filter-bar" id="student-class-filter-bar"></div>
                         <div class="search-bar">
                             <input type="text" id="student-search" placeholder="Search students...">
                             <button class="btn btn-primary"><i class="fas fa-search"></i></button>
@@ -187,11 +222,11 @@
                             <table id="students-table" class="data-table">
                                 <thead>
                                     <tr>
-                                        <th>ID</th>
-                                        <th>Name</th>
-                                        <th>Guardian</th>
+                                        <th class="sortable" data-sort="register" style="cursor:pointer;user-select:none;white-space:nowrap;">ID <span class="sort-ind"></span></th>
+                                        <th class="sortable" data-sort="name" style="cursor:pointer;user-select:none;white-space:nowrap;">Name <span class="sort-ind"></span></th>
+                                        <th class="sortable" data-sort="guardian" style="cursor:pointer;user-select:none;white-space:nowrap;">Guardian <span class="sort-ind"></span></th>
                                         <th>Contact</th>
-                                        <th>Class</th>
+                                        <th class="sortable" data-sort="class" style="cursor:pointer;user-select:none;white-space:nowrap;">Class <span class="sort-ind"></span></th>
                                         <th>Actions</th>
                                     </tr>
                                 </thead>
@@ -213,6 +248,9 @@
                             <div class="tab active" data-tab-target="#session-list">Sessions</div>
                             <div class="tab" data-tab-target="#take-attendance">Take Attendance</div>
                             <div class="tab" data-tab-target="#generate-reports">Generate Reports</div>
+                            <button type="button" class="btn btn-secondary" id="print-register-btn" style="margin-left:auto;">
+                                <i class="fas fa-print"></i> Print Class Register
+                            </button>
                         </div>
                         <div id="session-list" class="tab-content active">
                             <div class="table-wrapper">
@@ -230,13 +268,22 @@
                             </div>
                         </div>
                         <div id="take-attendance" class="tab-content">
-                            <div class="form-group">
-                                <label for="session-date">Select Session Date</label>
-                                <select id="session-date">
-                                    <option value="">-- Select a session --</option>
-                                </select>
+                            <div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;">
+                                <div class="form-group" style="flex:1;min-width:180px;margin-bottom:0;">
+                                    <label for="session-date">Select Session Date</label>
+                                    <select id="session-date">
+                                        <option value="">-- Select a session --</option>
+                                    </select>
+                                </div>
+                                <div class="form-group" style="margin-bottom:0;">
+                                    <label>Attendance Scope</label>
+                                    <div class="btn-group" id="attendance-scope-toggle">
+                                        <button class="btn btn-primary btn-sm att-scope-btn active" data-scope="class" type="button">My Class</button>
+                                        <button class="btn btn-secondary btn-sm att-scope-btn" data-scope="all" type="button">All Students</button>
+                                    </div>
+                                </div>
                             </div>
-                            <div id="attendance-form-container">
+                            <div id="attendance-form-container" style="margin-top:16px;">
                                 <p>Please select a session to take attendance.</p>
                             </div>
                         </div>
@@ -244,18 +291,45 @@
                             <div class="report-section card">
                                 <div class="card-header">
                                     <h4>Overall Attendance Report</h4>
-                                    <button class="btn btn-primary" id="generate-overall-report-btn">
-                                        <i class="fas fa-chart-pie"></i> Generate
-                                    </button>
+                                    <div class="btn-group">
+                                        <button class="btn btn-primary" id="generate-overall-report-btn">
+                                            <i class="fas fa-chart-pie"></i> Generate
+                                        </button>
+                                        <button class="btn btn-success" id="download-overall-report-btn" style="display:none;">
+                                            <i class="fas fa-file-pdf"></i> Download PDF
+                                        </button>
+                                    </div>
+                                </div>
+                                <div class="card-nested" id="attendance-date-filter-panel" style="margin-bottom:16px;">
+                                    <div class="grid">
+                                        <div class="form-group">
+                                            <label for="att-filter-from">From Date</label>
+                                            <input type="date" id="att-filter-from">
+                                        </div>
+                                        <div class="form-group">
+                                            <label for="att-filter-to">To Date</label>
+                                            <input type="date" id="att-filter-to">
+                                        </div>
+                                    </div>
+                                    <div class="btn-group">
+                                        <button class="btn btn-sm btn-primary" id="apply-att-filter-btn"><i class="fas fa-filter"></i> Apply Date Filter</button>
+                                        <button class="btn btn-sm btn-secondary" id="clear-att-filter-btn"><i class="fas fa-times"></i> Clear Filter</button>
+                                    </div>
+                                    <div id="att-filter-status" style="margin-top:8px;font-size:0.82rem;color:var(--text-muted);"></div>
                                 </div>
                                 <div id="overall-report-container" class="report-container"></div>
                             </div>
                             <div class="report-section card">
                                 <div class="card-header">
                                     <h4>Day-wise Attendance Report</h4>
-                                    <button class="btn btn-primary" id="print-daywise-report-btn" class="is-hidden">
-                                        <i class="fas fa-print"></i> Print Report
-                                    </button>
+                                    <div class="btn-group">
+                                        <button class="btn btn-primary" id="print-daywise-report-btn" style="display:none;">
+                                            <i class="fas fa-print"></i> Print Report
+                                        </button>
+                                        <button class="btn btn-success" id="download-daywise-report-btn" style="display:none;">
+                                            <i class="fas fa-file-pdf"></i> Download PDF
+                                        </button>
+                                    </div>
                                 </div>
                                 <div class="form-group">
                                     <label for="report-session-date">Select Session Date</label>
@@ -334,7 +408,122 @@
                     </div>
                 </div>
 
+                <div id="homework" class="tab-content">
+                    <!-- My Class Assignments (admin-as-faculty) -->
+                    <div class="card" id="my-class-hw-card">
+                        <div class="card-header">
+                            <h2 class="card-title"><i class="fas fa-chalkboard-teacher" style="color:var(--primary);margin-right:8px;"></i>My Class Assignments</h2>
+                            <button type="button" class="btn btn-primary" id="add-homework-btn"><i class="fas fa-plus"></i> New Assignment</button>
+                        </div>
+                        <div class="card-nested" id="homework-form-container" style="display:none;margin-bottom:16px;">
+                            <h4 style="margin-bottom:14px;font-weight:600;" id="homework-form-title">New Assignment</h4>
+                            <div class="grid">
+                                <div class="form-group">
+                                    <label for="hw-title">Title *</label>
+                                    <input type="text" id="hw-title" maxlength="150" placeholder="e.g., Chapter 5 Questions">
+                                </div>
+                                <div class="form-group">
+                                    <label for="hw-subject">Subject</label>
+                                    <input type="text" id="hw-subject" maxlength="100" placeholder="e.g., Sacraments">
+                                </div>
+                            </div>
+                            <div class="grid">
+                                <div class="form-group">
+                                    <label for="hw-due-date">Due Date</label>
+                                    <input type="date" id="hw-due-date">
+                                </div>
+                                <div class="form-group" id="hw-class-group">
+                                    <label for="hw-class-select">Class</label>
+                                    <select id="hw-class-select"></select>
+                                </div>
+                            </div>
+                            <div class="form-group">
+                                <label for="hw-description">Description</label>
+                                <textarea id="hw-description" rows="3" maxlength="1000" placeholder="Describe the assignment..."></textarea>
+                            </div>
+                            <div class="form-group">
+                                <label for="hw-attachment-note">Attachment / Note</label>
+                                <input type="text" id="hw-attachment-note" maxlength="200" placeholder="e.g., See printed worksheet given in class">
+                            </div>
+                            <input type="hidden" id="hw-editing-id">
+                            <div style="display:flex;gap:8px;margin-top:8px;">
+                                <button type="button" class="btn btn-primary" id="save-homework-btn"><i class="fas fa-save"></i> Save Assignment</button>
+                                <button type="button" class="btn btn-secondary" id="cancel-homework-btn"><i class="fas fa-times"></i> Cancel</button>
+                            </div>
+                        </div>
+                        <div class="table-wrapper">
+                            <table class="data-table">
+                                <thead><tr><th>Title</th><th>Subject</th><th>Due Date</th><th>Submitted</th><th>Actions</th></tr></thead>
+                                <tbody id="my-hw-tbody"></tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- All Other Classes' Assignments (overview) -->
+                    <div class="card" style="margin-top:20px;">
+                        <div class="card-header">
+                            <h2 class="card-title"><i class="fas fa-book-open" style="color:var(--text-muted);margin-right:8px;"></i>Other Classes' Assignments</h2>
+                        </div>
+                        <div class="table-wrapper">
+                            <table id="homework-table" class="data-table">
+                                <thead><tr><th>Title</th><th>Subject</th><th>Class</th><th>Due Date</th><th>Created By</th><th>Submitted</th></tr></thead>
+                                <tbody id="homework-tbody"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
                 <div id="admin-panel" class="tab-content">
+
+                    <!-- B8: Announcements Management -->
+                    <div class="card" id="announcements-management-card">
+                        <div class="card-header">
+                            <h2 class="card-title">Announcements</h2>
+                            <button class="btn btn-primary btn-sm" id="new-announcement-btn">
+                                <i class="fas fa-plus"></i> New Announcement
+                            </button>
+                        </div>
+                        <div id="announcements-form-section" style="display:none;" class="card card-nested">
+                            <h3 id="announcement-form-title">New Announcement</h3>
+                            <input type="hidden" id="announcement-id">
+                            <div class="form-group">
+                                <label for="announcement-title">Title *</label>
+                                <input type="text" id="announcement-title" placeholder="Announcement title">
+                            </div>
+                            <div class="form-group">
+                                <label for="announcement-body">Message *</label>
+                                <textarea id="announcement-body" rows="4" placeholder="Announcement message..."></textarea>
+                            </div>
+                            <div class="grid">
+                                <div class="form-group">
+                                    <label for="announcement-audience">Audience</label>
+                                    <select id="announcement-audience">
+                                        <option value="all">All (Faculty + Students)</option>
+                                        <option value="faculty">Faculty Only</option>
+                                        <option value="students">Students Only</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label for="announcement-expires">Expires On (Optional)</label>
+                                    <input type="date" id="announcement-expires">
+                                </div>
+                            </div>
+                            <div class="form-group">
+                                <label style="display:flex;gap:10px;align-items:center;font-weight:500;">
+                                    <input type="checkbox" id="announcement-pinned">
+                                    <span>Pin this announcement</span>
+                                </label>
+                            </div>
+                            <div class="btn-group">
+                                <button class="btn btn-outline btn-sm" id="cancel-announcement-btn">Cancel</button>
+                                <button class="btn btn-primary btn-sm" id="save-announcement-btn">Save Announcement</button>
+                            </div>
+                        </div>
+                        <div id="announcements-admin-list">
+                            <p>Loading announcements...</p>
+                        </div>
+                    </div>
+
                     <div class="card">
                         <div class="card-header">
                             <h2 class="card-title">Admin Tools</h2>
@@ -523,25 +712,45 @@
                                 </div>
 
                                 <hr class="section-divider">
-                                <h4>Faculty Migration Wizard</h4>
-                                <p style="color: var(--text-color-light); margin-bottom: 15px;">
-                                    Enable migration on an active year, then faculty can import students from the
-                                    previous year using the Faculty Portal.
+                                <h4><i class="fas fa-user-graduate" style="margin-right:6px;color:var(--primary);"></i>Student Year Promotion</h4>
+                                <p style="color:var(--text-color-light);margin-bottom:16px;">
+                                    Promote students from one year/class to another. Example: promote all <strong>Class 6</strong> students from <strong>2024-2025</strong> into <strong>Class 7</strong> for <strong>2025-2026</strong>.
                                 </p>
-                                <div class="form-group">
-                                    <label for="migration-enable-year-select">Select Year to Enable Migration</label>
-                                    <select id="migration-enable-year-select">
-                                        <option value="">-- Select --</option>
-                                    </select>
+                                <div class="grid" style="grid-template-columns:1fr 1fr;gap:14px;margin-bottom:12px;">
+                                    <div class="form-group">
+                                        <label><i class="fas fa-arrow-circle-left" style="margin-right:4px;"></i>From Year (source)</label>
+                                        <select id="promo-from-year"><option value="">-- Select --</option></select>
+                                    </div>
+                                    <div class="form-group">
+                                        <label>From Class (source)</label>
+                                        <select id="promo-from-class"><option value="">-- Select --</option></select>
+                                    </div>
                                 </div>
-                                <div class="btn-group">
-                                    <button class="btn btn-warning" id="enable-migration-btn" type="button">
-                                        <i class="fas fa-arrow-right"></i> Enable Migration for Selected Year
+                                <div class="grid" style="grid-template-columns:1fr 1fr;gap:14px;margin-bottom:16px;">
+                                    <div class="form-group">
+                                        <label><i class="fas fa-arrow-circle-right" style="margin-right:4px;color:var(--primary);"></i>To Year (target)</label>
+                                        <select id="promo-to-year"><option value="">-- Select --</option></select>
+                                    </div>
+                                    <div class="form-group">
+                                        <label>To Class (target)</label>
+                                        <select id="promo-to-class"><option value="">-- Select --</option></select>
+                                    </div>
+                                </div>
+                                <div class="btn-group" style="margin-bottom:14px;">
+                                    <button class="btn btn-outline" id="promo-preview-btn" type="button">
+                                        <i class="fas fa-search"></i> Preview Students
                                     </button>
-                                    <button class="btn btn-secondary" id="disable-migration-btn" type="button">
-                                        <i class="fas fa-times"></i> Disable Migration
+                                    <button class="btn btn-primary" id="promo-run-btn" type="button" disabled>
+                                        <i class="fas fa-forward"></i> Promote Students
+                                    </button>
+                                    <button class="btn btn-warning" id="promo-fix-regnos-btn" type="button">
+                                        <i class="fas fa-sort-numeric-up"></i> Fix Register Numbers
                                     </button>
                                 </div>
+                                <p style="font-size:0.82rem;color:var(--text-muted);margin-bottom:12px;">
+                                    <i class="fas fa-info-circle"></i> <strong>Fix Register Numbers</strong> — select the <em>To Year</em> and <em>To Class</em>, then click this to reassign all register numbers in <code>{classNo}{seq:02}</code> format (e.g. 701, 702 …).
+                                </p>
+                                <div id="promo-preview-container"></div>
                             </div>
 
                             <div class="card card-nested">
@@ -702,6 +911,67 @@
                             </button>
                         </div>
 
+                        <hr class="section-divider">
+                        <h4><i class="fas fa-file-pdf" style="color:var(--primary);margin-right:8px;"></i>Today's Attendance Report</h4>
+                        <div class="card-nested" id="todays-attendance-section">
+                            <p>Download a PDF listing every enrolled student (Class KG &rarr; 12) and their attendance status for a session.</p>
+                            <div class="grid">
+                                <div class="form-group">
+                                    <label for="todays-att-date">Session Date</label>
+                                    <input type="date" id="todays-att-date">
+                                </div>
+                            </div>
+                            <div class="btn-group">
+                                <button class="btn btn-primary" id="download-todays-attendance-btn" type="button">
+                                    <i class="fas fa-file-pdf"></i> Download Attendance PDF
+                                </button>
+                            </div>
+                            <div id="todays-att-status" style="margin-top:8px;font-size:0.85rem;color:var(--text-muted);"></div>
+                        </div>
+
+                        <hr class="section-divider">
+                        <h4><i class="fas fa-award" style="color:var(--warning);margin-right:8px;"></i>Certificate Generator</h4>
+                        <div class="card-nested" id="certificate-generator-section">
+                            <div class="grid">
+                                <div class="form-group">
+                                    <label for="cert-class-select">Class</label>
+                                    <select id="cert-class-select">
+                                        <option value="">-- Select class --</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label for="cert-type-select">Certificate Type</label>
+                                    <select id="cert-type-select">
+                                        <option value="attendance">Attendance Certificate (&ge;75% only)</option>
+                                        <option value="participation">Participation Certificate (all students)</option>
+                                        <option value="completion">Completion Certificate (all students)</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label for="cert-secretary-name">Catechism Secretary</label>
+                                    <input type="text" id="cert-secretary-name" placeholder="Secretary name">
+                                </div>
+                                <div class="form-group">
+                                    <label for="cert-teacher-name">Class Teacher</label>
+                                    <input type="text" id="cert-teacher-name" placeholder="Class teacher name">
+                                </div>
+                                <div class="form-group">
+                                    <label for="cert-authority-name">Parish Priest</label>
+                                    <input type="text" id="cert-authority-name" value="Rev. Fr. " placeholder="Parish priest name">
+                                </div>
+                                <div class="form-group">
+                                    <label for="cert-date">Certificate Date</label>
+                                    <input type="date" id="cert-date">
+                                </div>
+                            </div>
+                            <div class="btn-group">
+                                <button class="btn btn-warning" id="generate-certs-btn" type="button">
+                                    <i class="fas fa-award"></i> Generate Certificates
+                                </button>
+                            </div>
+                            <div id="cert-status" style="margin-top:8px;font-size:0.85rem;color:var(--text-muted);"></div>
+                        </div>
+
                         <div class="card card-nested" style="border-color: var(--danger);">
                             <div class="card-header">
                                 <h3 class="card-title" style="color: var(--danger);">Danger Zone: System Restore</h3>
@@ -721,6 +991,8 @@
                         </div>
                     </div>
                 </div>
+                </div>
+                </main>
             </div>
         </div>
     </div>
@@ -734,19 +1006,26 @@
             <div class="modal-body">
                 <form id="student-form">
                     <input type="hidden" id="student-id">
+                    <input type="hidden" id="student-id-input">
                     <div class="grid">
                         <div class="form-group">
-                            <label for="student-first-name">First Name *</label>
+                            <label for="student-seq-id">Student ID <span style="font-size:0.75rem;color:var(--text-muted);font-weight:400;">(auto)</span></label>
+                            <input type="text" id="student-seq-id" readonly style="background:var(--bg-secondary);color:var(--text-muted);cursor:default;" placeholder="Auto-assigned...">
+                        </div>
+                        <div class="form-group">
+                            <label for="student-register-no">Register No <span style="font-size:0.75rem;color:var(--text-muted);font-weight:400;">(auto on class select)</span></label>
+                            <input type="number" id="student-register-no" readonly style="background:var(--bg-secondary);color:var(--text-muted);cursor:default;" placeholder="Select class first...">
+                        </div>
+                    </div>
+                    <div class="grid">
+                        <div class="form-group">
+                            <label for="student-first-name">Name *</label>
                             <input type="text" id="student-first-name" required>
                         </div>
                         <div class="form-group">
-                            <label for="student-last-name">Last Name *</label>
-                            <input type="text" id="student-last-name" required>
+                            <label for="student-last-name">Last Name</label>
+                            <input type="text" id="student-last-name">
                         </div>
-                    </div>
-                    <div class="form-group">
-                        <label for="student-id-input">Student ID *</label>
-                        <input type="text" id="student-id-input" required>
                     </div>
                     <div class="grid">
                         <div class="form-group">
@@ -754,15 +1033,35 @@
                             <input type="date" id="student-dob">
                         </div>
                         <div class="form-group" data-admin-only="true">
-                            <label for="student-class-id">Class *</label>
-                            <select id="student-class-id" required>
+                            <label for="student-class-id">Class
+                                <button type="button" id="student-class-change-btn" class="btn btn-link btn-sm" style="display:none;padding:0;margin-left:8px;font-size:0.75rem;color:var(--primary);background:none;border:none;cursor:pointer;text-decoration:underline;">Change class</button>
+                            </label>
+                            <select id="student-class-id">
                                 <option value="">-- Select a class --</option>
                             </select>
+                            <small id="student-class-lock-hint" style="display:none;color:var(--text-muted);font-size:0.75rem;">Locked to your class. Click "Change class" to add to a different class.</small>
                         </div>
                     </div>
                     <div class="form-group">
-                        <label for="student-guardian">Guardian Name *</label>
-                        <input type="text" id="student-guardian" required>
+                        <label for="student-guardian">Guardian Name</label>
+                        <input type="text" id="student-guardian">
+                    </div>
+                    <div class="grid">
+                        <div class="form-group">
+                            <label for="student-anbiyam">Anbiyam Name</label>
+                            <input type="text" id="student-anbiyam" placeholder="Anbiyam / unit name">
+                        </div>
+                        <div class="form-group">
+                            <label style="display:block;margin-bottom:6px;">Sacraments</label>
+                            <label style="display:flex;gap:8px;align-items:center;font-weight:400;font-size:0.9rem;">
+                                <input type="checkbox" id="student-first-communion">
+                                <span>Received First Holy Communion</span>
+                            </label>
+                            <label style="display:flex;gap:8px;align-items:center;font-weight:400;font-size:0.9rem;margin-top:4px;">
+                                <input type="checkbox" id="student-confirmation">
+                                <span>Received Confirmation</span>
+                            </label>
+                        </div>
                     </div>
                     <div class="grid">
                         <div class="form-group">
@@ -778,6 +1077,49 @@
                         <label for="student-notes">Notes</label>
                         <textarea id="student-notes" rows="3"></textarea>
                     </div>
+                    <div class="form-group">
+                        <label for="student-behavior-note">Behavior Note</label>
+                        <textarea id="student-behavior-note" rows="3" placeholder="Optional behavior note visible to faculty/admin"></textarea>
+                    </div>
+                    <div class="form-group">
+                        <label style="display:flex;gap:10px;align-items:center;font-weight:500;">
+                            <input type="checkbox" id="student-behavior-visibility" checked>
+                            <span>Show behavior note to student</span>
+                        </label>
+                    </div>
+                    <details style="margin-top:8px;">
+                        <summary style="cursor:pointer;font-weight:600;font-size:0.9rem;color:var(--text-secondary);padding:8px 0;list-style:none;display:flex;align-items:center;gap:8px;">
+                            <i class="fas fa-users"></i> Family &amp; Contact Details
+                        </summary>
+                        <div style="margin-top:12px;">
+                            <div class="grid">
+                                <div class="form-group">
+                                    <label for="student-father-name">Father's Full Name</label>
+                                    <input type="text" id="student-father-name" placeholder="Father's name">
+                                </div>
+                                <div class="form-group">
+                                    <label for="student-father-phone">Father's Phone</label>
+                                    <input type="tel" id="student-father-phone" placeholder="Father's mobile">
+                                </div>
+                                <div class="form-group">
+                                    <label for="student-mother-name">Mother's Full Name</label>
+                                    <input type="text" id="student-mother-name" placeholder="Mother's name">
+                                </div>
+                                <div class="form-group">
+                                    <label for="student-mother-phone">Mother's Phone</label>
+                                    <input type="tel" id="student-mother-phone" placeholder="Mother's mobile">
+                                </div>
+                                <div class="form-group">
+                                    <label for="student-emergency-name">Emergency Contact Name</label>
+                                    <input type="text" id="student-emergency-name" placeholder="Emergency contact name">
+                                </div>
+                                <div class="form-group">
+                                    <label for="student-emergency-phone">Emergency Phone</label>
+                                    <input type="tel" id="student-emergency-phone" placeholder="Emergency mobile">
+                                </div>
+                            </div>
+                        </div>
+                    </details>
                 </form>
             </div>
             <div class="modal-footer">
@@ -823,6 +1165,43 @@
             </div>
         </div>
     </div>
+    <div id="assessment-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Create New Assessment</h3>
+                <button class="close-btn">&times;</button>
+            </div>
+            <div class="modal-body">
+                <form id="assessment-form">
+                    <div class="form-group">
+                        <label for="assessment-name">Assessment Name *</label>
+                        <input type="text" id="assessment-name" required>
+                    </div>
+                    <div class="grid">
+                        <div class="form-group">
+                            <label for="assessment-date">Date *</label>
+                            <input type="date" id="assessment-date" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="assessment-total-marks">Total Marks *</label>
+                            <input type="number" id="assessment-total-marks" min="1" required>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label for="assessment-class-id">For Class *</label>
+                        <select id="assessment-class-id" required>
+                            <option value="">-- Select a class --</option>
+                        </select>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-outline close-btn">Cancel</button>
+                <button class="btn btn-primary" id="save-assessment-btn">Create Assessment</button>
+            </div>
+        </div>
+    </div>
+
     <div id="scores-modal" class="modal">
         <div class="modal-content">
             <div class="modal-header">
@@ -904,6 +1283,119 @@
             <div class="modal-footer">
                 <button class="btn btn-outline" id="cancel-admin-profile-edit-btn" type="button">Cancel</button>
                 <button class="btn btn-primary" id="save-admin-profile-btn" type="button">Save Profile</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- A6: Student Transfer Modal -->
+    <div id="transfer-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Transfer Student</h3>
+                <button class="close-btn" id="close-transfer-modal-btn">&times;</button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="transfer-student-id">
+                <p id="transfer-student-info" style="margin-bottom:12px;"></p>
+                <div class="form-group">
+                    <label for="transfer-target-class">Transfer To Class *</label>
+                    <select id="transfer-target-class">
+                        <option value="">-- Select target class --</option>
+                    </select>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-outline" id="cancel-transfer-btn" type="button">Cancel</button>
+                <button class="btn btn-primary" id="confirm-transfer-btn" type="button">
+                    <i class="fas fa-exchange-alt"></i> Confirm Transfer
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- A5: Print Class Register Modal -->
+    <div id="print-register-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 class="card-title"><i class="fas fa-print"></i> Print Class Register</h3>
+                <button class="close-btn" id="close-print-register-btn"><i class="fas fa-times"></i></button>
+            </div>
+            <div class="modal-body">
+                <div class="grid">
+                    <div class="form-group">
+                        <label for="register-session-select">Session (Date)</label>
+                        <select id="register-session-select">
+                            <option value="">-- Select session --</option>
+                        </select>
+                    </div>
+                    <div class="form-group" id="register-class-group">
+                        <label for="register-class-select">Class</label>
+                        <select id="register-class-select">
+                            <option value="">-- Select class --</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" id="cancel-print-register-btn">Cancel</button>
+                <button class="btn btn-primary" id="confirm-print-register-btn"><i class="fas fa-print"></i> Print Register</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- B1: CSV Import Modal -->
+    <div id="csv-import-modal" class="modal">
+        <div class="modal-content" style="max-width:700px;">
+            <div class="modal-header">
+                <h3 class="card-title"><i class="fas fa-file-csv"></i> Import Students from CSV</h3>
+                <button class="close-btn" id="close-csv-modal-btn"><i class="fas fa-times"></i></button>
+            </div>
+            <div class="modal-body">
+                <div style="background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius);padding:14px;margin-bottom:16px;font-size:0.85rem;color:var(--text-secondary);">
+                    <strong>Required CSV columns:</strong> firstName, lastName, dob (YYYY-MM-DD), guardian, phone<br>
+                    <strong>Optional columns:</strong> email, classId, notes, fatherName, fatherPhone, motherName, motherPhone<br>
+                    <span style="color:var(--text-muted);">Duplicate students (same firstName + lastName + dob) will be skipped.</span>
+                </div>
+                <div style="display:flex;gap:10px;margin-bottom:14px;">
+                    <input type="file" id="csv-file-input" accept=".csv" style="flex:1;">
+                    <button type="button" class="btn btn-secondary btn-sm" id="csv-template-btn"><i class="fas fa-download"></i> Download Template</button>
+                </div>
+                <div id="csv-preview-container" class="is-hidden">
+                    <div id="csv-validation-errors" style="margin-bottom:10px;"></div>
+                    <div id="csv-preview-info" style="margin-bottom:10px;font-weight:600;color:var(--text-primary);"></div>
+                    <div class="table-wrapper" style="max-height:280px;overflow-y:auto;">
+                        <table id="csv-preview-table" class="data-table" style="font-size:0.82rem;">
+                            <thead><tr id="csv-preview-thead-row"></tr></thead>
+                            <tbody id="csv-preview-tbody"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" id="cancel-csv-import-btn">Cancel</button>
+                <button class="btn btn-success is-hidden" id="confirm-csv-import-btn"><i class="fas fa-upload"></i> Import Students</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- C3: Homework Submissions Modal (Admin view) -->
+    <div id="hw-submissions-modal" class="modal">
+        <div class="modal-content" style="max-width:620px;">
+            <div class="modal-header">
+                <h3 class="card-title"><i class="fas fa-list-check"></i> Homework Submissions</h3>
+                <button class="close-btn" id="close-hw-submissions-btn"><i class="fas fa-times"></i></button>
+            </div>
+            <div class="modal-body">
+                <div id="hw-submissions-info" style="margin-bottom:14px;font-weight:600;color:var(--text-secondary);"></div>
+                <div class="table-wrapper">
+                    <table class="data-table" style="font-size:0.88rem;">
+                        <thead><tr><th>Student</th><th>Status</th><th>Update</th></tr></thead>
+                        <tbody id="hw-submissions-tbody"></tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" id="close-hw-submissions-modal-btn">Close</button>
             </div>
         </div>
     </div>

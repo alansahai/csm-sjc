@@ -4,104 +4,20 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>VBS Portal - 2026</title>
+    <title>VBS Portal 2026 — St. Jude's Catechism</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <link rel="stylesheet" href="css/style.css?v=20260428a">
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⛪</text></svg>">
+    <link rel="stylesheet" href="css/style.css">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.9.3/html2pdf.bundle.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
 
-    <script src="/firebase.config.js"></script>
-    <script type="module">
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/12.5.0/firebase-app.js";
-        import {
-            getFirestore, collection, getDocs, query, where, setDoc, doc, getDoc, deleteDoc
-        } from "https://www.gstatic.com/firebasejs/12.5.0/firebase-firestore.js";
-        import { getAuth, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/12.5.0/firebase-auth.js";
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+    <script src="/supabase.config.js"></script>
+    <script src="js/supabase.js"></script>
 
-        const firebaseConfig = window.__FIREBASE_CONFIG__;
-        if (!firebaseConfig) {
-            console.error("Firebase config is missing!");
-            Swal.fire('Configuration Error', 'Firebase config is missing. The app cannot start.', 'error');
-        } else {
-            const app = initializeApp(firebaseConfig);
-            const db = getFirestore(app);
-            const auth = getAuth(app);
-
-            Object.assign(window, {
-                db, auth, collection, getDocs, query, where, setDoc, doc, getDoc, deleteDoc, onAuthStateChanged, signOut
-            });
-        }
-    </script>
-
-    <script src="js/common.js?v=20260428a" defer></script>
-    <script src="js/vbs.js?v=20260428a" defer></script>
-
-    <style>
-        .vbs-tabs {
-            display: flex;
-            gap: 8px;
-            margin-bottom: 24px;
-            border-bottom: 2px solid var(--border-color, #e5e7eb);
-            flex-wrap: wrap;
-        }
-
-        .vbs-tab-btn {
-            padding: 12px 20px;
-            background: transparent;
-            border: none;
-            cursor: pointer;
-            font-size: 14px;
-            font-weight: 500;
-            color: var(--text-muted, #6b7280);
-            position: relative;
-            transition: color 0.2s;
-        }
-
-        .vbs-tab-btn:hover {
-            color: var(--text-primary, #111827);
-        }
-
-        .vbs-tab-btn.active {
-            color: var(--primary-color, #2563eb);
-            font-weight: 600;
-        }
-
-        .vbs-tab-btn.active::after {
-            content: '';
-            position: absolute;
-            bottom: -2px;
-            left: 0;
-            right: 0;
-            height: 2px;
-            background-color: var(--primary-color, #2563eb);
-        }
-
-        .vbs-tab-content {
-            display: none;
-        }
-
-        .vbs-tab-content.active {
-            display: block;
-        }
-
-        .vbs-portal-status {
-            display: inline-block;
-            padding: 6px 12px;
-            background-color: #fef3c7;
-            border: 1px solid #f59e0b;
-            color: #92400e;
-            border-radius: 4px;
-            font-size: 13px;
-            font-weight: 500;
-        }
-
-        .vbs-portal-status.active {
-            background-color: #dcfce7;
-            border-color: #22c55e;
-            color: #166534;
-        }
-    </style>
+    <script src="js/common.js" defer></script>
+    <script src="js/vbs.js" defer></script>
 </head>
 
 <body>
@@ -111,7 +27,7 @@
 
     <div id="app-error-overlay" class="error-overlay is-hidden">
         <div class="error-box">
-            <h2>VBS portal failed to initialize</h2>
+            <h2>VBS Portal failed to initialize</h2>
             <p id="app-error-message"></p>
             <div>
                 <button id="app-error-reload" class="btn btn-success">Reload page</button>
@@ -120,288 +36,330 @@
         </div>
     </div>
 
-    <div id="app-content" class="is-hidden">
-        <header>
-            <div class="container">
-                <div class="header-content">
-                    <div class="logo">
-                        <i class="fas fa-church"></i>
-                        <h1>VBS Portal 2026</h1>
-                    </div>
+    <div id="app-content" class="is-hidden portal-layout">
 
-                    <div class="header-actions">
-                        <button id="vbs-back-btn" class="btn btn-outline" type="button">
-                            <i class="fas fa-arrow-left"></i> Back To Main
-                        </button>
-                        <div class="theme-switch-wrapper">
-                            <label class="theme-switch" for="theme-toggle">
-                                <input type="checkbox" id="theme-toggle" />
-                                <div class="slider round">
-                                    <i class="fas fa-sun sun-icon"></i>
-                                    <i class="fas fa-moon moon-icon"></i>
-                                </div>
-                            </label>
+        <!-- Portal Header -->
+        <header class="portal-header">
+            <div class="portal-header-inner container">
+                <div class="portal-header-start">
+                    <button id="vbs-back-btn" class="btn btn-sm btn-secondary" type="button">
+                        <i class="fas fa-arrow-left"></i> Back
+                    </button>
+                    <div class="portal-brand">
+                        <div class="portal-brand-icon" style="background: linear-gradient(135deg,#2563eb,#1d4ed8);">
+                            <i class="fas fa-church"></i>
                         </div>
-                        <div class="profile-dropdown">
-                            <button id="profile-btn" class="profile-btn">
-                                <i class="fas fa-user-circle"></i>
-                            </button>
-                            <div id="profile-menu" class="profile-menu is-hidden">
-                                <div id="user-info-email" class="profile-info-item">...</div>
-                                <div id="user-info-role" class="profile-info-item">...</div>
-                                <hr>
-                                <button id="logout-btn" class="profile-menu-item">
-                                    <i class="fas fa-sign-out-alt"></i> Logout
-                                </button>
+                        <div class="portal-brand-text">
+                            <span class="portal-brand-title">VBS Portal 2026</span>
+                            <span class="portal-brand-sub">St. Jude's Catechism</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="portal-header-end">
+                    <div class="theme-switch-wrapper">
+                        <label class="theme-switch" for="theme-toggle">
+                            <input type="checkbox" id="theme-toggle" />
+                            <div class="slider round">
+                                <i class="fas fa-sun sun-icon"></i>
+                                <i class="fas fa-moon moon-icon"></i>
                             </div>
+                        </label>
+                    </div>
+                    <div class="profile-dropdown">
+                        <button id="profile-btn" class="profile-btn" type="button">
+                            <i class="fas fa-user"></i>
+                        </button>
+                        <div id="profile-menu" class="profile-menu is-hidden">
+                            <div id="user-info-email" class="profile-info-item">...</div>
+                            <div id="user-info-role" class="profile-info-item">...</div>
+                            <hr>
+                            <button id="logout-btn" class="profile-menu-item">
+                                <i class="fas fa-sign-out-alt"></i> Logout
+                            </button>
                         </div>
                     </div>
                 </div>
             </div>
         </header>
 
-        <div class="container">
-            <!-- Portal Status Bar -->
-            <div class="card" style="margin-bottom: 16px;">
-                <div style="display: flex; justify-content: space-between; align-items: center;">
+        <!-- Portal Content -->
+        <div class="portal-content">
+            <div class="container">
+
+                <!-- Hero Banner -->
+                <div class="portal-hero-banner" style="background: linear-gradient(135deg,#1e3a8a 0%,#1e40af 100%);">
+                    <div class="portal-hero-icon" style="background:rgba(96,165,250,0.2);">
+                        <i class="fas fa-church" style="color:#93c5fd;"></i>
+                    </div>
+                    <div style="flex:1;">
+                        <div class="portal-hero-title">Vacation Bible School 2026</div>
+                        <div class="portal-hero-sub">Manage student onboarding, attendance tracking, and reports — St. Jude's Catechism</div>
+                    </div>
                     <div>
-                        <strong>VBS Turnover Portal Status:</strong>
                         <span id="vbs-portal-status" class="vbs-portal-status">Inactive</span>
                     </div>
-                    <button id="vbs-create-portal-btn" class="btn btn-outline btn-sm">
-                        <i class="fas fa-plus"></i> Create Portal For Active Year
-                    </button>
                 </div>
-            </div>
 
-            <!-- Tab Navigation -->
-            <div class="card">
-                <div class="vbs-tabs">
-                    <button class="vbs-tab-btn active" data-tab="onboarding">
-                        <i class="fas fa-user-plus"></i> Onboarding
-                    </button>
-                    <button class="vbs-tab-btn" data-tab="roster">
-                        <i class="fas fa-list"></i> Portal Roster
-                    </button>
-                    <button class="vbs-tab-btn" data-tab="attendance">
-                        <i class="fas fa-calendar-check"></i> Attendance
-                    </button>
-                    <button class="vbs-tab-btn" data-tab="reports">
-                        <i class="fas fa-file-pdf"></i> Reports
-                    </button>
-                </div>
-            </div>
-
-            <!-- Tab 1: Onboarding -->
-            <div id="onboarding-tab" class="vbs-tab-content active">
-                <div class="card">
-                    <div class="card-header">
-                        <h2 class="card-title">Add Students To VBS Portal</h2>
-                    </div>
-                    <p style="margin-bottom: 16px; color: #666;">Manually enter student details for VBS attendance
-                        tracking.</p>
-
-                    <div class="grid">
-                        <div class="form-group">
-                            <label for="vbs-portal-student-name">Student Name *</label>
-                            <input id="vbs-portal-student-name" type="text" placeholder="Full name" required>
+                <!-- Portal Actions Bar -->
+                <div class="card" style="margin-bottom:20px;">
+                    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;">
+                        <div style="display:flex;align-items:center;gap:10px;">
+                            <i class="fas fa-info-circle" style="color:var(--primary);"></i>
+                            <span style="font-weight:600;color:var(--text-secondary);font-size:0.9rem;">Portal Status:</span>
+                            <span id="vbs-portal-status-text" style="font-size:0.88rem;color:var(--text-muted);">Create a portal for the active academic year to begin.</span>
                         </div>
-                        <div class="form-group">
-                            <label for="vbs-portal-student-class">Class *</label>
-                            <select id="vbs-portal-student-class" required>
-                                <option value="">-- Select class --</option>
-                            </select>
-                        </div>
-                        <div class="form-group">
-                            <label for="vbs-portal-student-father">Father / Guardian</label>
-                            <input id="vbs-portal-student-father" type="text" placeholder="Father name">
-                        </div>
-                        <div class="form-group">
-                            <label for="vbs-portal-student-phone">Contact Number</label>
-                            <input id="vbs-portal-student-phone" type="text" placeholder="Phone">
-                        </div>
-                        <div class="form-group">
-                            <label for="vbs-portal-student-id">Student ID (Optional)</label>
-                            <input id="vbs-portal-student-id" type="text" placeholder="Or auto-generated">
-                        </div>
-                    </div>
-
-                    <div class="btn-group">
-                        <button id="vbs-portal-add-btn" class="btn btn-success">
-                            <i class="fas fa-save"></i> Add Student
-                        </button>
-                        <button class="btn btn-outline" onclick="document.getElementById('vbs-portal-student-name').value=''; document.getElementById('vbs-portal-student-father').value=''; document.getElementById('vbs-portal-student-phone').value=''; document.getElementById('vbs-portal-student-id').value=''>
-                            <i class=" fas fa-times"></i> Clear
+                        <button id="vbs-create-portal-btn" class="btn btn-outline btn-sm">
+                            <i class="fas fa-plus"></i> Create Portal For Active Year
                         </button>
                     </div>
                 </div>
-            </div>
 
-            <!-- Tab 2: Portal Roster -->
-            <div id="roster-tab" class="vbs-tab-content">
-                <div class="card">
-                    <div class="card-header">
-                        <h2 class="card-title">VBS Portal Roster</h2>
-                    </div>
-
-                    <div class="grid">
-                        <div class="form-group">
-                            <label for="vbs-portal-class-filter">Class</label>
-                            <select id="vbs-portal-class-filter">
-                                <option value="">All Classes</option>
-                            </select>
-                        </div>
-                        <div class="form-group">
-                            <label for="vbs-portal-search">Search Student</label>
-                            <input id="vbs-portal-search" type="text" placeholder="Name / ID / Phone">
-                        </div>
-                    </div>
-
-                    <div class="table-wrapper">
-                        <table id="vbs-portal-students-table" class="data-table">
-                            <thead>
-                                <tr>
-                                    <th>Student ID</th>
-                                    <th>Name</th>
-                                    <th>Class</th>
-                                    <th>Guardian</th>
-                                    <th>Phone</th>
-                                    <th>Actions</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                <tr>
-                                    <td colspan="6" style="text-align: center; padding: 20px; color: #999;">
-                                        No students added yet. Use the Onboarding tab to add students.
-                                    </td>
-                                </tr>
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Tab 3: Attendance -->
-            <div id="attendance-tab" class="vbs-tab-content">
-                <div class="card">
-                    <div class="card-header">
-                        <h2 class="card-title">Attendance Marking</h2>
-                    </div>
-
-                    <div class="grid">
-                        <div class="form-group">
-                            <label for="vbs-attendance-date">Date *</label>
-                            <input type="date" id="vbs-attendance-date" required>
-                        </div>
-                        <div class="form-group">
-                            <label for="vbs-attendance-class-filter">Class</label>
-                            <select id="vbs-attendance-class-filter">
-                                <option value="">All Classes</option>
-                            </select>
-                        </div>
-                        <div class="form-group">
-                            <label for="vbs-attendance-search">Search Student</label>
-                            <input type="text" id="vbs-attendance-search" placeholder="Name / ID">
-                        </div>
-                        <div class="form-group">
-                            <label for="vbs-attendance-sort">Sort By</label>
-                            <select id="vbs-attendance-sort">
-                                <option value="class_name_asc">Class then Name (A-Z)</option>
-                                <option value="name_asc">Name (A-Z)</option>
-                                <option value="name_desc">Name (Z-A)</option>
-                                <option value="student_id_asc">Student ID</option>
-                            </select>
-                        </div>
-                    </div>
-
-                    <div class="btn-group" style="margin-bottom: 16px;">
-                        <button class="btn btn-primary" id="vbs-quick-add-student-btn">
-                            <i class="fas fa-plus"></i> Add & Mark Now
+                <!-- Tab Navigation -->
+                <div class="card" style="padding:0;overflow:hidden;margin-bottom:0;">
+                    <div class="vbs-tabs" style="padding:0 20px;margin:0;">
+                        <button class="vbs-tab-btn active" data-tab="onboarding">
+                            <i class="fas fa-user-plus"></i> Onboarding
                         </button>
-                        <button class="btn btn-success" id="vbs-save-attendance-btn">
-                            <i class="fas fa-save"></i> Save Attendance
+                        <button class="vbs-tab-btn" data-tab="roster">
+                            <i class="fas fa-list"></i> Portal Roster
+                        </button>
+                        <button class="vbs-tab-btn" data-tab="attendance">
+                            <i class="fas fa-calendar-check"></i> Attendance
+                        </button>
+                        <button class="vbs-tab-btn" data-tab="reports">
+                            <i class="fas fa-file-pdf"></i> Reports
                         </button>
                     </div>
-
-                    <div class="table-wrapper">
-                        <table id="vbs-attendance-table" class="data-table">
-                            <thead>
-                                <tr>
-                                    <th>Student ID</th>
-                                    <th>Name</th>
-                                    <th>Class</th>
-                                    <th>Status</th>
-                                    <th>Actions</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                <tr>
-                                    <td colspan="5" style="text-align: center; padding: 20px; color: #999;">
-                                        Select a date to mark attendance.
-                                    </td>
-                                </tr>
-                            </tbody>
-                        </table>
-                    </div>
                 </div>
-            </div>
 
-            <!-- Tab 4: Reports -->
-            <div id="reports-tab" class="vbs-tab-content">
-                <div class="card">
-                    <div class="card-header">
-                        <h2 class="card-title">Report Generation</h2>
-                    </div>
-
-                    <div style="margin-bottom: 24px;">
-                        <h3 style="font-size: 16px; margin-bottom: 12px;">Option 1: Daily Report by Date</h3>
-                        <p style="color: #666; margin-bottom: 12px;">Select a date with attendance entries to download a
-                            detailed report for that day.</p>
+                <!-- Tab 1: Onboarding -->
+                <div id="onboarding-tab" class="vbs-tab-content active" style="margin-top:16px;">
+                    <div class="card">
+                        <div class="card-header">
+                            <h2 class="card-title"><i class="fas fa-user-plus" style="color:var(--success);margin-right:8px;"></i>Add Students To VBS Portal</h2>
+                        </div>
+                        <p style="margin-bottom:16px;color:var(--text-secondary);font-size:0.9rem;">
+                            Manually enter student details for VBS attendance tracking.
+                        </p>
 
                         <div class="grid">
                             <div class="form-group">
-                                <label for="vbs-today-report-date-select">Select Date</label>
-                                <select id="vbs-today-report-date-select">
-                                    <option value="">Loading dates...</option>
-                                </select>
-                                <small id="vbs-report-date-note" style="display: block; margin-top: 6px; color: #666;">
-                                    Only dates with attendance entries are shown.
-                                </small>
+                                <label for="vbs-portal-student-name">Student Name <span style="color:var(--danger)">*</span></label>
+                                <input id="vbs-portal-student-name" type="text" placeholder="Full name" required>
                             </div>
-
                             <div class="form-group">
-                                <label>Available Dates</label>
-                                <div id="vbs-report-date-meta" class="ea-pill-row"></div>
+                                <label for="vbs-portal-student-class">Class <span style="color:var(--danger)">*</span></label>
+                                <select id="vbs-portal-student-class" required>
+                                    <option value="">— Select class —</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label for="vbs-portal-student-father">Father / Guardian</label>
+                                <input id="vbs-portal-student-father" type="text" placeholder="Father / guardian name">
+                            </div>
+                            <div class="form-group">
+                                <label for="vbs-portal-student-phone">Contact Number</label>
+                                <input id="vbs-portal-student-phone" type="tel" placeholder="Phone number">
+                            </div>
+                            <div class="form-group">
+                                <label for="vbs-portal-student-id">Student ID <span style="color:var(--text-muted);font-weight:400;">(Optional)</span></label>
+                                <input id="vbs-portal-student-id" type="text" placeholder="Leave blank to auto-generate">
                             </div>
                         </div>
 
                         <div class="btn-group">
-                            <button class="btn btn-primary" id="vbs-generate-today-report-btn">
-                                <i class="fas fa-file-download"></i> Download Daily Report
+                            <button id="vbs-portal-add-btn" class="btn btn-success">
+                                <i class="fas fa-save"></i> Add Student
                             </button>
-                            <button class="btn btn-danger" id="vbs-remove-attendance-range-btn">
-                                <i class="fas fa-trash"></i> Remove Test Attendance
-                            </button>
-                        </div>
-                    </div>
-
-                    <hr style="margin: 24px 0; border: none; border-top: 1px solid #e5e7eb;">
-
-                    <div>
-                        <h3 style="font-size: 16px; margin-bottom: 12px;">Option 2: Full Attendance Matrix</h3>
-                        <p style="color: #666; margin-bottom: 16px;">Download a comprehensive attendance matrix report
-                            for all students and dates.</p>
-
-                        <div class="btn-group">
-                            <button class="btn btn-success" id="vbs-generate-detailed-report-btn">
-                                <i class="fas fa-file-archive"></i> Download Detailed Report
+                            <button class="btn btn-secondary" type="button" onclick="
+                                document.getElementById('vbs-portal-student-name').value='';
+                                document.getElementById('vbs-portal-student-father').value='';
+                                document.getElementById('vbs-portal-student-phone').value='';
+                                document.getElementById('vbs-portal-student-id').value='';">
+                                <i class="fas fa-times"></i> Clear
                             </button>
                         </div>
                     </div>
                 </div>
-            </div>
 
-            <div id="vbs-report-render-area" class="ea-report-render-host"></div>
+                <!-- Tab 2: Portal Roster -->
+                <div id="roster-tab" class="vbs-tab-content" style="margin-top:16px;">
+                    <div class="card">
+                        <div class="card-header">
+                            <h2 class="card-title"><i class="fas fa-users" style="color:var(--primary);margin-right:8px;"></i>VBS Portal Roster</h2>
+                        </div>
+
+                        <div class="grid">
+                            <div class="form-group">
+                                <label for="vbs-portal-class-filter">Filter by Class</label>
+                                <select id="vbs-portal-class-filter">
+                                    <option value="">All Classes</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label for="vbs-portal-search">Search Student</label>
+                                <input id="vbs-portal-search" type="text" placeholder="Name / ID / Phone">
+                            </div>
+                        </div>
+
+                        <div class="table-wrapper">
+                            <table id="vbs-portal-students-table" class="data-table">
+                                <thead>
+                                    <tr>
+                                        <th>Student ID</th>
+                                        <th>Name</th>
+                                        <th>Class</th>
+                                        <th>Guardian</th>
+                                        <th>Phone</th>
+                                        <th>Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr>
+                                        <td colspan="6" style="text-align:center;padding:24px;color:var(--text-muted);">
+                                            <i class="fas fa-users" style="font-size:1.5rem;display:block;margin-bottom:8px;opacity:0.4;"></i>
+                                            No students added yet. Use the Onboarding tab to add students.
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Tab 3: Attendance -->
+                <div id="attendance-tab" class="vbs-tab-content" style="margin-top:16px;">
+                    <div class="card">
+                        <div class="card-header">
+                            <h2 class="card-title"><i class="fas fa-calendar-check" style="color:var(--success);margin-right:8px;"></i>Attendance Marking</h2>
+                        </div>
+
+                        <div class="grid">
+                            <div class="form-group">
+                                <label for="vbs-attendance-date">Date <span style="color:var(--danger)">*</span></label>
+                                <input type="date" id="vbs-attendance-date" required>
+                            </div>
+                            <div class="form-group">
+                                <label for="vbs-attendance-class-filter">Filter by Class</label>
+                                <select id="vbs-attendance-class-filter">
+                                    <option value="">All Classes</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label for="vbs-attendance-search">Search Student</label>
+                                <input type="text" id="vbs-attendance-search" placeholder="Name / ID">
+                            </div>
+                            <div class="form-group">
+                                <label for="vbs-attendance-sort">Sort By</label>
+                                <select id="vbs-attendance-sort">
+                                    <option value="class_name_asc">Class then Name (A–Z)</option>
+                                    <option value="name_asc">Name (A–Z)</option>
+                                    <option value="name_desc">Name (Z–A)</option>
+                                    <option value="student_id_asc">Student ID</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <div class="btn-group" style="margin-bottom:16px;">
+                            <button class="btn btn-primary" id="vbs-quick-add-student-btn">
+                                <i class="fas fa-plus"></i> Add &amp; Mark Now
+                            </button>
+                            <button class="btn btn-success" id="vbs-save-attendance-btn">
+                                <i class="fas fa-save"></i> Save Attendance
+                            </button>
+                        </div>
+
+                        <div class="table-wrapper">
+                            <table id="vbs-attendance-table" class="data-table">
+                                <thead>
+                                    <tr>
+                                        <th>Student ID</th>
+                                        <th>Name</th>
+                                        <th>Class</th>
+                                        <th>Status</th>
+                                        <th>Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr>
+                                        <td colspan="5" style="text-align:center;padding:24px;color:var(--text-muted);">
+                                            <i class="fas fa-calendar" style="font-size:1.5rem;display:block;margin-bottom:8px;opacity:0.4;"></i>
+                                            Select a date to load and mark attendance.
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Tab 4: Reports -->
+                <div id="reports-tab" class="vbs-tab-content" style="margin-top:16px;">
+                    <div class="card">
+                        <div class="card-header">
+                            <h2 class="card-title"><i class="fas fa-file-pdf" style="color:var(--danger);margin-right:8px;"></i>Report Generation</h2>
+                        </div>
+
+                        <div class="card-nested">
+                            <h3 style="font-size:1rem;font-weight:700;margin-bottom:8px;color:var(--text-primary);">
+                                <i class="fas fa-calendar-day" style="color:var(--primary);margin-right:6px;"></i>Option 1 — Daily Report by Date
+                            </h3>
+                            <p style="color:var(--text-secondary);margin-bottom:14px;font-size:0.88rem;">
+                                Select a date with attendance entries to download a detailed report for that day.
+                            </p>
+
+                            <div class="grid">
+                                <div class="form-group">
+                                    <label for="vbs-today-report-date-select">Select Date</label>
+                                    <select id="vbs-today-report-date-select">
+                                        <option value="">Loading dates...</option>
+                                    </select>
+                                    <small id="vbs-report-date-note" style="display:block;margin-top:4px;color:var(--text-muted);">
+                                        Only dates with attendance entries are shown.
+                                    </small>
+                                </div>
+                                <div class="form-group">
+                                    <label>Available Dates</label>
+                                    <div id="vbs-report-date-meta" class="ea-pill-row"></div>
+                                </div>
+                            </div>
+
+                            <div class="btn-group">
+                                <button class="btn btn-primary" id="vbs-generate-today-report-btn">
+                                    <i class="fas fa-file-download"></i> Download Daily Report
+                                </button>
+                                <button class="btn btn-danger" id="vbs-remove-attendance-range-btn">
+                                    <i class="fas fa-trash"></i> Remove Test Attendance
+                                </button>
+                            </div>
+                        </div>
+
+                        <div class="section-divider"></div>
+
+                        <div class="card-nested">
+                            <h3 style="font-size:1rem;font-weight:700;margin-bottom:8px;color:var(--text-primary);">
+                                <i class="fas fa-table" style="color:var(--success);margin-right:6px;"></i>Option 2 — Full Attendance Matrix
+                            </h3>
+                            <p style="color:var(--text-secondary);margin-bottom:14px;font-size:0.88rem;">
+                                Download a comprehensive attendance matrix report for all students and all dates.
+                            </p>
+
+                            <div class="btn-group">
+                                <button class="btn btn-success" id="vbs-generate-detailed-report-btn">
+                                    <i class="fas fa-file-archive"></i> Download Detailed Report
+                                </button>
+                                <button class="btn btn-primary" id="vbs-generate-100-percent-report-btn">
+                                    <i class="fas fa-award"></i> Download 100% Attendance List
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="vbs-report-render-area" class="ea-report-render-host"></div>
+
+            </div>
         </div>
     </div>
 </body>

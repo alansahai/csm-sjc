@@ -32,7 +32,9 @@ const DATA_MODELS = {
     enrollments: [],
     classYearCounters: [],
     facultyClassAssignments: [],
-    appConfig: { activeAcademicYearId: null }
+    appConfig: { activeAcademicYearId: null },
+    homework: [],
+    homeworkSubmissions: []
 };
 window.DATA_MODELS = DATA_MODELS; // Expose for debugging
 
@@ -41,6 +43,16 @@ window.realtimeUnsubscribers = [];
 
 // Global var to hold user data after verification
 let currentUserData = null;
+
+// A2: At-risk filter state
+let showAtRiskOnly = false;
+
+// B7: Attendance date filter state
+let ATTENDANCE_DATE_FILTER = { from: null, to: null };
+
+// B1: CSV import state
+let CSV_PARSED_ROWS = [];
+
 const FACULTY_ONBOARDING_VERSION = 1;
 let facultyOnboardingResolver = null;
 const YEAR_MIGRATION_STATE = {
@@ -55,7 +67,7 @@ const YEAR_MIGRATION_STATE = {
 // -----------------
 document.addEventListener('DOMContentLoaded', function () {
     if (typeof window.onAuthStateChanged !== 'function') {
-        return handleAppError("Firebase Auth is not loaded. Cannot start app.");
+        return handleAppError("Supabase Auth is not loaded. Cannot start app.");
     }
 
     // Start auth listener
@@ -97,6 +109,12 @@ async function initializeApp(user, userData) {
     document.getElementById('user-info-email').textContent = user.email;
     document.getElementById('user-info-role').textContent = `Faculty - ${userData.classId || 'Unassigned'}`;
 
+    // Populate sidebar user info
+    const sidebarEmail = document.getElementById('sidebar-user-email');
+    const sidebarRole = document.getElementById('sidebar-user-role');
+    if (sidebarEmail) sidebarEmail.textContent = user.email;
+    if (sidebarRole) sidebarRole.textContent = userData.classId ? `Faculty - ${userData.classId}` : 'Faculty';
+
     await loadAcademicYearContext();
     await watchAcademicYearContext(async () => {
         location.reload();
@@ -116,6 +134,9 @@ async function initializeApp(user, userData) {
 
     // Start fetching realtime data
     startRealtimeListeners();
+
+    // B8: Start announcements listener
+    startFacultyAnnouncementsListener();
 
     // Show the app content and hide the spinner
     document.getElementById('app-content').classList.remove('is-hidden');
@@ -181,6 +202,7 @@ function setupEventListeners() {
 
     // Logout Button (in profile menu)
     document.getElementById('logout-btn').addEventListener('click', logout); // From common.js
+    document.getElementById('sidebar-logout-btn')?.addEventListener('click', logout);
 
     // Faculty profile editing
     document.getElementById('edit-profile-btn')?.addEventListener('click', openFacultyProfileEditor);
@@ -189,16 +211,19 @@ function setupEventListeners() {
     document.getElementById('close-faculty-profile-modal-btn')?.addEventListener('click', closeFacultyProfileEditor);
 
     // Profile Menu Toggle
-    document.getElementById('profile-btn').addEventListener('click', () => {
-        document.getElementById('profile-menu').classList.toggle('is-hidden');
+    document.getElementById('profile-btn').addEventListener('click', (e) => {
+        e.stopPropagation();
+        const menu = document.getElementById('profile-menu');
+        const isOpen = menu.style.display === 'block';
+        menu.style.display = isOpen ? 'none' : 'block';
     });
 
     // Close profile menu on outside click
-    window.addEventListener('click', (e) => {
+    document.addEventListener('click', (e) => {
         const menu = document.getElementById('profile-menu');
         const btn = document.getElementById('profile-btn');
-        if (menu && btn && !menu.classList.contains('is-hidden') && !menu.contains(e.target) && !btn.contains(e.target)) {
-            menu.classList.add('is-hidden');
+        if (menu && menu.style.display === 'block' && btn && !btn.contains(e.target) && !menu.contains(e.target)) {
+            menu.style.display = 'none';
         }
     });
 
@@ -259,8 +284,9 @@ function setupEventListeners() {
     // Attendance report buttons
     document.getElementById('generate-overall-report-btn')?.addEventListener('click', generateOverallAttendanceReport);
     document.getElementById('report-session-date')?.addEventListener('change', generateDaywiseAttendanceReport);
-    document.getElementById('print-daywise-report-btn')?.addEventListener('click', () => {
-        printReport('daywise-report-container', 'Day-wise Attendance Report'); // From common.js
+    document.getElementById('print-daywise-report-btn')?.addEventListener('click', exportDaywiseReportAsPdf);
+    document.getElementById('download-overall-report-btn')?.addEventListener('click', () => {
+        downloadContainerAsPDF('overall-report-container', 'Overall_Attendance_Report.pdf');
     });
 
     // View Student Modal Close
@@ -268,9 +294,7 @@ function setupEventListeners() {
         document.getElementById('student-view-modal').style.display = 'none';
     });
 
-    // Academic year migration tools
-    document.getElementById('preview-year-migration-btn')?.addEventListener('click', loadYearMigrationCandidates);
-    document.getElementById('run-year-migration-btn')?.addEventListener('click', runYearMigration);
+    // Academic year migration is admin-only — removed from faculty
 
     // Faculty onboarding
     document.getElementById('faculty-onboarding-form')?.addEventListener('submit', completeFacultyOnboarding);
@@ -293,6 +317,54 @@ function setupEventListeners() {
     // PHASE 3: Quick Onboarding Listeners
     setupQuickOnboardingListeners();
     initializeQuickOnboarding();
+
+    // A2: At-risk filter toggle
+    document.getElementById('show-at-risk-btn')?.addEventListener('click', () => {
+        showAtRiskOnly = !showAtRiskOnly;
+        renderStudentsTable();
+    });
+
+    // Student transfer is admin-only — removed from faculty
+
+    // A5: Print Class Register
+    document.getElementById('print-register-btn')?.addEventListener('click', openPrintRegisterModal);
+    document.getElementById('close-print-register-btn')?.addEventListener('click', () => { document.getElementById('print-register-modal').style.display = 'none'; });
+    document.getElementById('cancel-print-register-btn')?.addEventListener('click', () => { document.getElementById('print-register-modal').style.display = 'none'; });
+    document.getElementById('confirm-print-register-btn')?.addEventListener('click', printClassRegister);
+
+    // B1: CSV Import
+    document.getElementById('import-csv-btn-new')?.addEventListener('click', openCsvImportModal);
+    document.getElementById('close-csv-modal-btn')?.addEventListener('click', () => { document.getElementById('csv-import-modal').style.display = 'none'; });
+    document.getElementById('cancel-csv-import-btn')?.addEventListener('click', () => { document.getElementById('csv-import-modal').style.display = 'none'; });
+    document.getElementById('csv-template-btn')?.addEventListener('click', downloadCSVTemplate);
+    document.getElementById('csv-file-input')?.addEventListener('change', handleCsvFileSelect);
+    document.getElementById('confirm-csv-import-btn')?.addEventListener('click', runCsvImport);
+
+    // B7: Attendance date filter
+    document.getElementById('apply-att-filter-btn')?.addEventListener('click', applyAttendanceDateFilter);
+    document.getElementById('clear-att-filter-btn')?.addEventListener('click', clearAttendanceDateFilter);
+
+    // C3: Homework
+    document.getElementById('add-homework-btn')?.addEventListener('click', openHomeworkForm);
+    document.getElementById('save-homework-btn')?.addEventListener('click', saveHomework);
+    document.getElementById('cancel-homework-btn')?.addEventListener('click', () => {
+        document.getElementById('homework-form-container').style.display = 'none';
+        document.getElementById('hw-editing-id').value = '';
+    });
+    document.getElementById('close-hw-submissions-btn')?.addEventListener('click', () => {
+        document.getElementById('hw-submissions-modal').style.display = 'none';
+    });
+    document.getElementById('close-hw-submissions-modal-btn')?.addEventListener('click', () => {
+        document.getElementById('hw-submissions-modal').style.display = 'none';
+    });
+    document.getElementById('homework-tbody')?.addEventListener('click', e => {
+        const editBtn = e.target.closest('.hw-edit-btn');
+        const delBtn = e.target.closest('.hw-delete-btn');
+        const subBtn = e.target.closest('.hw-submissions-btn');
+        if (editBtn) editHomework(editBtn.dataset.hwId);
+        if (delBtn) deleteHomework(delBtn.dataset.hwId);
+        if (subBtn) viewHomeworkSubmissions(subBtn.dataset.hwId);
+    });
 }
 
 function openFacultyProfileEditor() {
@@ -363,6 +435,14 @@ function handleNavTabClick(e) {
     document.querySelectorAll('[data-tab]').forEach(t => t.classList.remove('active'));
     this.classList.add('active');
 
+    // Update topbar title
+    const tabTitles = { dashboard: 'Dashboard', students: 'Students', attendance: 'Attendance', assessments: 'Assessments', reports: 'Reports', homework: 'Homework' };
+    const topbarTitle = document.getElementById('topbar-title');
+    if (topbarTitle) topbarTitle.textContent = tabTitles[targetTab] || targetTab;
+
+    // Sync sidebar link active state
+    document.querySelectorAll('.sidebar-link[data-tab]').forEach(sl => sl.classList.toggle('active', sl.getAttribute('data-tab') === targetTab));
+
     // Show corresponding content
     document.querySelectorAll('.main-content > .tab-content').forEach(content => {
         content.classList.remove('active');
@@ -378,6 +458,10 @@ function handleNavTabClick(e) {
     }
     if (targetTab === 'reports') {
         updateReportDropdown();
+    }
+    if (targetTab === 'homework') {
+        populateHwClassDropdown();
+        renderHomeworkTable();
     }
 }
 
@@ -462,17 +546,15 @@ function startRealtimeListeners() {
 
     const { db, onSnapshot, collection, query, where } = window;
 
-    // STUDENTS Listener (scoped to class)
-    const studentsQuery = query(
-        collection(db, 'students'),
-        where('classId', '==', userClassId)
-    );
-    const unsubStudents = onSnapshot(studentsQuery, snapshot => {
-        DATA_MODELS.students = [];
-        snapshot.forEach(doc => {
-            const data = doc.data();
-            DATA_MODELS.students.push(data);
-        });
+    // Dual-listener approach: enrollments = class membership source of truth,
+    // students = profile data. Both update DATA_MODELS.students in memory.
+    let _enrolledIds = new Set();
+    let _allStudentProfiles = [];
+    const activeYearId = getActiveAcademicYearId();
+
+    function _rebuildStudents() {
+        DATA_MODELS.students = _allStudentProfiles
+            .filter(s => _enrolledIds.has(String(s.studentId)));
         DATA_MODELS.students.sort((a, b) =>
             String(a.studentId).localeCompare(String(b.studentId), undefined, { numeric: true })
         );
@@ -482,17 +564,51 @@ function startRealtimeListeners() {
         renderEarlyAngelTables();
         renderDashboard();
         console.log('[realtime] students sync', DATA_MODELS.students.length);
+    }
+
+    // ACADEMIC YEARS Listener — needed for dashboard year label and migration panel
+    const unsubAcademicYears = onSnapshot(collection(db, 'academicYears'), snapshot => {
+        DATA_MODELS.academicYears = [];
+        snapshot.forEach(d => DATA_MODELS.academicYears.push({ id: d.id, ...d.data() }));
+        DATA_MODELS.academicYears.sort((a, b) => String(b.id || '').localeCompare(String(a.id || '')));
+        renderDashboard();
+    }, err => console.error('[realtime] academicYears listener error', err));
+    window.realtimeUnsubscribers.push(unsubAcademicYears);
+
+    // ENROLLMENT Listener — fires when admin promotes/adds/removes a student for this class+year
+    const enrollmentsQuery = activeYearId
+        ? query(collection(db, 'enrollments'),
+                where('academicYearId', '==', activeYearId),
+                where('classId', '==', userClassId))
+        : query(collection(db, 'enrollments'), where('classId', '==', userClassId));
+
+    const unsubEnrollments = onSnapshot(enrollmentsQuery, snap => {
+        _enrolledIds = new Set(
+            snap.docs
+                .map(d => d.data())
+                .filter(e => e.status !== 'transferred')
+                .map(e => String(e.studentId))
+        );
+        DATA_MODELS.enrollments = snap.docs.map(d => d.data());
+        console.log('[realtime] enrollments sync', snap.docs.length);
+        _rebuildStudents();
+    }, err => console.error('[realtime] enrollments listener error', err));
+    window.realtimeUnsubscribers.push(unsubEnrollments);
+
+    // STUDENTS Listener — global (faculty can read all students per rules), filtered in memory
+    const unsubStudents = onSnapshot(collection(db, 'students'), snapshot => {
+        _allStudentProfiles = snapshot.docs.map(d => d.data());
+        _rebuildStudents();
     }, err => console.error('[realtime] students listener error', err));
     window.realtimeUnsubscribers.push(unsubStudents);
 
-    // SESSIONS Listener (global)
-    const sessionsQuery = collection(db, 'sessions');
+    // SESSIONS Listener — must include academicYearId so rule's recordInActiveYear() is satisfied
+    const sessionsQuery = activeYearId
+        ? query(collection(db, 'sessions'), where('academicYearId', '==', activeYearId))
+        : collection(db, 'sessions');
     const unsubSessions = onSnapshot(sessionsQuery, snapshot => {
         DATA_MODELS.sessions = [];
-        snapshot.forEach(doc => {
-            const data = doc.data();
-            if (isCurrentAcademicYear(data)) DATA_MODELS.sessions.push(data);
-        });
+        snapshot.forEach(doc => DATA_MODELS.sessions.push(doc.data()));
         renderSessionsTable();
         renderAttendanceForm(document.getElementById('session-date')?.value || '');
         renderDashboard();
@@ -500,54 +616,38 @@ function startRealtimeListeners() {
     }, err => console.error('[realtime] sessions listener error', err));
     window.realtimeUnsubscribers.push(unsubSessions);
 
-    // ASSESSMENTS Listener (scoped to class)
-    const assessmentsQuery = query(
-        collection(db, 'assessments'),
-        where('classId', '==', userClassId)
-    );
+    // ASSESSMENTS Listener (scoped to class + active year)
+    const assessmentsQuery = activeYearId
+        ? query(collection(db, 'assessments'), where('classId', '==', userClassId), where('academicYearId', '==', activeYearId))
+        : query(collection(db, 'assessments'), where('classId', '==', userClassId));
     const unsubAssessments = onSnapshot(assessmentsQuery, (snapshot) => {
-        DATA_MODELS.assessments = [];
-        snapshot.forEach((doc) => {
-            const data = { id: doc.id, ...doc.data() };
-            if (isCurrentAcademicYear(data)) DATA_MODELS.assessments.push(data);
-        });
+        DATA_MODELS.assessments = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
         renderAssessmentsTable();
         console.log('[realtime] Synced assessments:', DATA_MODELS.assessments.length);
     }, err => console.error('[realtime] Assessments listener error:', err));
     window.realtimeUnsubscribers.push(unsubAssessments);
 
-    // ATTENDANCE Listener (scoped to class)
-    const attendanceQuery = query(
-        collection(db, 'attendance'),
-        where('classId', '==', userClassId)
-    );
+    // ATTENDANCE Listener (scoped to class + active year)
+    const attendanceQuery = activeYearId
+        ? query(collection(db, 'attendance'), where('classId', '==', userClassId), where('academicYearId', '==', activeYearId))
+        : query(collection(db, 'attendance'), where('classId', '==', userClassId));
     const unsubAttendance = onSnapshot(attendanceQuery, snapshot => {
-        DATA_MODELS.attendance = [];
-        snapshot.forEach(doc => {
-            const data = doc.data();
-            if (isCurrentAcademicYear(data)) DATA_MODELS.attendance.push(data);
-        });
+        DATA_MODELS.attendance = snapshot.docs.map(d => d.data());
         const currentSession = document.getElementById('session-date')?.value;
         if (currentSession) renderAttendanceForm(currentSession);
         console.log('[realtime] attendance sync', DATA_MODELS.attendance.length);
     }, err => console.error('[realtime] attendance listener error', err));
     window.realtimeUnsubscribers.push(unsubAttendance);
 
-    // SCORES Listener (scoped to class)
-    const scoresQuery = query(
-        collection(db, 'scores'),
-        where('classId', '==', userClassId)
-    );
+    // SCORES Listener (scoped to class + active year)
+    const scoresQuery = activeYearId
+        ? query(collection(db, 'scores'), where('classId', '==', userClassId), where('academicYearId', '==', activeYearId))
+        : query(collection(db, 'scores'), where('classId', '==', userClassId));
     const unsubScores = onSnapshot(scoresQuery, snapshot => {
-        DATA_MODELS.scores = [];
-        snapshot.forEach(doc => {
-            const data = doc.data();
-            if (isCurrentAcademicYear(data)) DATA_MODELS.scores.push(data);
-        });
+        DATA_MODELS.scores = snapshot.docs.map(d => d.data());
         renderAssessmentsTable();
-        // Refresh scores modal if open
         const scoresModal = document.getElementById('scores-modal');
-        if (window._currentScoresAssessmentId && scoresModal.style.display === 'flex') {
+        if (window._currentScoresAssessmentId && scoresModal?.style.display === 'flex') {
             openScoresModal(window._currentScoresAssessmentId);
         }
         console.log('[realtime] scores sync', DATA_MODELS.scores.length);
@@ -555,7 +655,6 @@ function startRealtimeListeners() {
     window.realtimeUnsubscribers.push(unsubScores);
 
     // EARLY ANGEL ENTRIES Listener (scoped to class + active year)
-    const activeYearId = getActiveAcademicYearId();
     const earlyAngelEntriesQuery = activeYearId
         ? query(
             collection(db, 'earlyAngelEntries'),
@@ -602,6 +701,39 @@ function startRealtimeListeners() {
         console.log('[realtime] earlyAngelLeaderboard sync', DATA_MODELS.earlyAngelLeaderboard.length);
     }, err => console.error('[realtime] earlyAngelLeaderboard listener error', err));
     window.realtimeUnsubscribers.push(unsubEarlyAngelLeaderboard);
+
+    // A6: Load classes list for transfer modal
+    const { getDocs, collection: col } = window;
+    if (getDocs && col) {
+        getDocs(col(db, 'classes')).then(snap => {
+            DATA_MODELS.classes = [];
+            snap.forEach(d => DATA_MODELS.classes.push({ id: d.id, ...d.data() }));
+        }).catch(err => console.warn('[faculty] Could not load classes:', err));
+    }
+
+    // C3: HOMEWORK listener (scoped to class)
+    const activeYearHw = getActiveAcademicYearId() || window.APP_CONTEXT?.activeAcademicYearId || DATA_MODELS.appConfig?.activeAcademicYearId;
+    if (activeYearHw) {
+        const hwQuery = query(collection(db, 'homework'),
+            where('classId', '==', userClassId),
+            where('academicYearId', '==', activeYearHw));
+        const unsubHw = onSnapshot(hwQuery, snap => {
+            DATA_MODELS.homework = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+            renderHomeworkTable();
+        }, err => console.error('[realtime] homework error', err));
+        window.realtimeUnsubscribers.push(unsubHw);
+
+        const hwSubQuery = query(collection(db, 'homeworkSubmissions'),
+            where('classId', '==', userClassId),
+            where('academicYearId', '==', activeYearHw));
+        const unsubHwSub = onSnapshot(hwSubQuery, snap => {
+            DATA_MODELS.homeworkSubmissions = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+            renderHomeworkTable();
+        }, err => console.error('[realtime] homeworkSubmissions error', err));
+        window.realtimeUnsubscribers.push(unsubHwSub);
+    } else {
+        console.warn('[faculty] Homework listener skipped — no active academic year ID yet');
+    }
 }
 
 // -----------------
@@ -773,6 +905,7 @@ async function completeFacultyOnboarding(e) {
     showSpinner();
     try {
         const payload = {
+            role: 'faculty',
             displayName,
             phone,
             onboardingCompleted: true,
@@ -926,125 +1059,9 @@ function renderYearMigrationPreview() {
     `;
 }
 
-async function loadYearMigrationCandidates() {
-    YEAR_MIGRATION_STATE.candidates = [];
-
-    const classId = currentUserData?.classId || '';
-    if (!window.db || !window.collection || !window.query || !window.where || !window.getDocs || !classId) {
-        renderYearMigrationPanel();
-        return;
-    }
-
-    await refreshYearMigrationState();
-    if (!YEAR_MIGRATION_STATE.migrationEnabled || !YEAR_MIGRATION_STATE.previousYearId || !YEAR_MIGRATION_STATE.activeYearId) {
-        renderYearMigrationPanel();
-        return;
-    }
-
-    try {
-        const previousYearQuery = query(
-            collection(window.db, 'students'),
-            where('classId', '==', classId),
-            where('academicYearId', '==', YEAR_MIGRATION_STATE.previousYearId)
-        );
-        const activeYearQuery = query(
-            collection(window.db, 'students'),
-            where('classId', '==', classId),
-            where('academicYearId', '==', YEAR_MIGRATION_STATE.activeYearId)
-        );
-
-        const [previousSnap, activeSnap] = await Promise.all([
-            getDocs(previousYearQuery),
-            getDocs(activeYearQuery)
-        ]);
-
-        const activeStudentIds = new Set(
-            activeSnap.docs.map(d => String(d.data()?.studentId || d.id))
-        );
-
-        const candidates = [];
-        previousSnap.forEach(docSnap => {
-            const student = docSnap.data() || {};
-            const studentId = String(student.studentId || docSnap.id);
-            if (!activeStudentIds.has(studentId)) {
-                candidates.push({ ...student, id: studentId, studentId });
-            }
-        });
-
-        YEAR_MIGRATION_STATE.candidates = candidates.sort((a, b) =>
-            String(a.studentId || '').localeCompare(String(b.studentId || ''), undefined, { numeric: true })
-        );
-    } catch (err) {
-        console.error('Failed to load migration candidates:', err);
-        showError('Failed to load migration preview: ' + err.message);
-    }
-
-    renderYearMigrationPanel();
-}
-
-async function runYearMigration() {
-    const classId = currentUserData?.classId || '';
-    const candidates = YEAR_MIGRATION_STATE.candidates || [];
-    const activeYearId = YEAR_MIGRATION_STATE.activeYearId;
-    const previousYearId = YEAR_MIGRATION_STATE.previousYearId;
-
-    if (!YEAR_MIGRATION_STATE.migrationEnabled || !activeYearId || !previousYearId) {
-        return showError('Migration is not enabled or year settings are incomplete.');
-    }
-    if (!classId) {
-        return showError('Faculty class is not configured. Contact admin.');
-    }
-    if (candidates.length === 0) {
-        return showError('No students available to migrate.');
-    }
-
-    const result = await showConfirmWithInput(
-        'Run Academic Year Migration?',
-        `This will copy ${candidates.length} students from ${previousYearId} to ${activeYearId} for class ${classId}. Type "MIGRATE" to continue.`,
-        'MIGRATE'
-    );
-    if (result.value !== 'MIGRATE') return showSuccess('Migration canceled.');
-
-    showSpinner();
-    try {
-        const writePromises = candidates.map(async sourceStudent => {
-            const studentPayload = withAcademicYear({
-                studentId: String(sourceStudent.studentId || sourceStudent.id || ''),
-                firstName: sourceStudent.firstName || '',
-                lastName: sourceStudent.lastName || '',
-                dob: sourceStudent.dob || '',
-                guardian: sourceStudent.guardian || '',
-                phone: sourceStudent.phone || '',
-                email: sourceStudent.email || '',
-                notes: sourceStudent.notes || '',
-                classId,
-                migratedFromYear: previousYearId,
-                migratedAt: new Date().toISOString(),
-                migratedBy: currentUserData?.uid || 'faculty'
-            });
-
-            const studentRef = doc(window.db, 'students', String(studentPayload.studentId));
-            await setDoc(studentRef, studentPayload, { merge: true });
-            await upsertEnrollmentForStudent(studentPayload, currentUserData?.uid || 'faculty');
-        });
-
-        await Promise.all(writePromises);
-
-        createAuditLog('faculty_academic_year_migration', {
-            classId,
-            fromYear: previousYearId,
-            toYear: activeYearId,
-            migratedCount: candidates.length
-        });
-
-        await loadYearMigrationCandidates();
-        showSuccess(`Migration complete. ${candidates.length} students copied to ${activeYearId}.`);
-    } catch (err) {
-        showError('Migration failed: ' + err.message);
-    } finally {
-        hideSpinner();
-    }
-}
+// Student migration and class assignment is admin-only — no-op in faculty portal
+async function loadYearMigrationCandidates() { return; }
+async function runYearMigration() { return; }
 
 function getEarlyAngelActiveYearId() {
     return getActiveAcademicYearId() || YEAR_MIGRATION_STATE.activeYearId || null;
@@ -1065,7 +1082,7 @@ function renderEarlyAngelStudentSelectors() {
         students.forEach(student => {
             const option = document.createElement('option');
             option.value = String(student.studentId || '');
-            option.textContent = `${student.studentId} - ${student.firstName || ''} ${student.lastName || ''}`.trim();
+            option.textContent = `${student.registerNo ?? student.studentId} - ${student.firstName || ''} ${student.lastName || ''}`.trim();
             entrySelect.appendChild(option);
         });
         if (currentValue && students.some(s => String(s.studentId) === currentValue)) {
@@ -1079,7 +1096,7 @@ function renderEarlyAngelStudentSelectors() {
         students.forEach(student => {
             const option = document.createElement('option');
             option.value = String(student.studentId || '');
-            option.textContent = `${student.studentId} - ${student.firstName || ''} ${student.lastName || ''}`.trim();
+            option.textContent = `${student.registerNo ?? student.studentId} - ${student.firstName || ''} ${student.lastName || ''}`.trim();
             filterSelect.appendChild(option);
         });
         if (currentValue && students.some(s => String(s.studentId) === currentValue)) {
@@ -1191,8 +1208,6 @@ async function saveEarlyAngelEntry(e) {
             points,
             notes,
             entryDate,
-            createdAt: nowIso,
-            createdBy: currentUserData?.uid || 'faculty'
         });
 
         await addDoc(collection(window.db, 'earlyAngelEntries'), entryPayload);
@@ -1200,13 +1215,12 @@ async function saveEarlyAngelEntry(e) {
         const summaryDocId = `${activeYearId}_${classId}_${entryDate}_${studentId}`;
         await setDoc(doc(window.db, 'earlyAngelDailySummary', summaryDocId), withAcademicYear({
             classId,
-            date: entryDate,
+            summaryDate: entryDate,
             studentId,
             studentName,
             pointsTotal: window.increment(points),
             entryCount: window.increment(1),
             lastUpdatedAt: nowIso,
-            updatedBy: currentUserData?.uid || 'faculty'
         }), { merge: true });
 
         const leaderboardDocId = `${activeYearId}_${classId}_${studentId}`;
@@ -1218,7 +1232,6 @@ async function saveEarlyAngelEntry(e) {
             entryCount: window.increment(1),
             lastEntryDate: entryDate,
             lastUpdatedAt: nowIso,
-            updatedBy: currentUserData?.uid || 'faculty'
         }), { merge: true });
 
         createAuditLog('early_angel_entry_saved', {
@@ -1248,9 +1261,11 @@ function renderStudentsTable() {
 
     const filterText = document.getElementById('student-search')?.value.toLowerCase() || '';
     const classId = String(currentUserData?.classId || '').trim();
-    const rosterStudents = getCurrentAcademicYearRoster(DATA_MODELS.students, DATA_MODELS.enrollments || [])
+    const availableSessions = DATA_MODELS.sessions.filter(s => s.status === 'Available');
+    let rosterStudents = getCurrentAcademicYearRoster(DATA_MODELS.students, DATA_MODELS.enrollments || [])
         .filter(student => !classId || String(student.classId || '') === classId);
-    const filteredStudents = rosterStudents.filter(student => {
+
+    let filteredStudents = rosterStudents.filter(student => {
         if (!filterText) return true;
         const searchText = [
             student.firstName,
@@ -1266,6 +1281,19 @@ function renderStudentsTable() {
         return searchText.includes(filterText);
     });
 
+    // A2: At-risk filter
+    if (showAtRiskOnly) {
+        filteredStudents = filteredStudents.filter(student => {
+            const pct = calcStudentAttendancePct(student.studentId, availableSessions, DATA_MODELS.attendance);
+            return pct !== null && pct < 75;
+        });
+        const btn = document.getElementById('show-at-risk-btn');
+        if (btn) btn.classList.add('btn-danger');
+    } else {
+        const btn = document.getElementById('show-at-risk-btn');
+        if (btn) btn.classList.remove('btn-danger');
+    }
+
     tbody.innerHTML = ''; // Clear table
     if (filteredStudents.length === 0) {
         tbody.innerHTML = '<tr><td colspan="6">No students found.</td></tr>';
@@ -1273,11 +1301,14 @@ function renderStudentsTable() {
     }
 
     filteredStudents.forEach(student => {
+        // A2: Attendance badge
+        const pct = calcStudentAttendancePct(student.studentId, availableSessions, DATA_MODELS.attendance);
+        const atRiskBadge = (pct !== null && pct < 75)
+            ? `<span class="at-risk-badge">⚠ ${pct}%</span>` : '';
         const row = document.createElement('tr');
-        // Use escapeHtml (from common.js) to prevent XSS from user data
         row.innerHTML = `
-            <td><a href="#" class="student-link" data-id="${escapeHtml(student.studentId)}">${escapeHtml(student.studentId)}</a></td>
-            <td>${escapeHtml(student.firstName)} ${escapeHtml(student.lastName)}</td>
+            <td><a href="#" class="student-link" data-id="${escapeHtml(student.studentId)}">${escapeHtml(student.registerNo ?? student.studentId)}</a></td>
+            <td>${escapeHtml(student.firstName)} ${escapeHtml(student.lastName)}${atRiskBadge}</td>
             <td>${escapeHtml(student.guardian)}</td>
             <td>${escapeHtml(student.phone || student.email || 'N/A')}</td>
             <td>${escapeHtml(student.classId || 'N/A')}</td>
@@ -1311,34 +1342,61 @@ function renderStudentsTable() {
 async function saveStudent() {
     showSpinner();
     try {
-        const studentIdInput = document.getElementById('student-id-input').value.trim();
+        const existingStudentId = document.getElementById('student-id').value; // non-empty = edit
+        const studentId = existingStudentId || crypto.randomUUID();
         const firstName = document.getElementById('student-first-name').value.trim();
         const lastName = document.getElementById('student-last-name').value.trim();
-        const dob = document.getElementById('student-dob').value;
+        const dob = document.getElementById('student-dob').value || null; // '' is invalid for DATE
         const guardian = document.getElementById('student-guardian').value.trim();
         const phone = document.getElementById('student-phone').value.trim();
         const email = document.getElementById('student-email').value.trim();
         const notes = document.getElementById('student-notes').value.trim();
-        const id = document.getElementById('student-id').value; // Hidden field for editing
+
+        // A4: Behavior note fields
+        const behaviorNote = document.getElementById('student-behavior-note')?.value.trim() || '';
+        const behaviorVisibility = document.getElementById('student-behavior-visibility')?.checked !== false;
 
         // Faculty role: classId comes from their own profile
         const classId = currentUserData.classId;
 
-        if (!firstName || !lastName || !studentIdInput || !guardian || !classId) {
-            throw new Error('Please fill in all required fields (*).');
+        if (!firstName) {
+            throw new Error('Please enter the student\'s name.');
         }
 
         const student = {
-            studentId: studentIdInput,
-            firstName, lastName, dob, guardian, phone, email, classId, notes
+            studentId,
+            firstName, lastName, dob, guardian, phone, email, classId, notes,
+            behaviorNote, behaviorVisibility,
+            anbiyamName: document.getElementById('student-anbiyam')?.value?.trim() || '',
+            receivedFirstCommunion: document.getElementById('student-first-communion')?.checked === true,
+            receivedConfirmation: document.getElementById('student-confirmation')?.checked === true,
+            fatherName: document.getElementById('student-father-name')?.value?.trim() || '',
+            fatherPhone: document.getElementById('student-father-phone')?.value?.trim() || '',
+            motherName: document.getElementById('student-mother-name')?.value?.trim() || '',
+            motherPhone: document.getElementById('student-mother-phone')?.value?.trim() || '',
+            emergencyName: document.getElementById('student-emergency-name')?.value?.trim() || '',
+            emergencyPhone: document.getElementById('student-emergency-phone')?.value?.trim() || '',
         };
 
-        // Persist to Firestore
+        // Persist profile to Firestore
         const studentRef = doc(window.db, 'students', String(student.studentId));
-        await setDoc(studentRef, student, { merge: true }); // Use merge to be safe
-        await upsertEnrollmentForStudent(student, currentUserData?.uid || 'faculty');
+        await setDoc(studentRef, student, { merge: true });
 
-        const action = id ? 'student_updated' : 'student_created';
+        // Create/update enrollment so the dual-listener picks this student up
+        const savedEnrollment = await upsertEnrollmentForStudent(student, currentUserData?.uid || 'faculty');
+
+        // Update local cache immediately so the table reflects the change without a reload.
+        const sIdx = (DATA_MODELS.students || []).findIndex(s => String(s.studentId) === String(student.studentId));
+        if (sIdx >= 0) DATA_MODELS.students[sIdx] = { ...DATA_MODELS.students[sIdx], ...student };
+        else DATA_MODELS.students.push({ ...student });
+        if (savedEnrollment && savedEnrollment.id) {
+            const eIdx = (DATA_MODELS.enrollments || []).findIndex(e => String(e.id) === String(savedEnrollment.id));
+            if (eIdx >= 0) DATA_MODELS.enrollments[eIdx] = { ...DATA_MODELS.enrollments[eIdx], ...savedEnrollment };
+            else DATA_MODELS.enrollments.push({ ...savedEnrollment });
+        }
+        renderStudentsTable();
+
+        const action = existingStudentId ? 'student_updated' : 'student_created';
         createAuditLog(action, { studentId: student.studentId, name: `${student.firstName} ${student.lastName}` });
 
         document.getElementById('student-modal').style.display = 'none';
@@ -1356,8 +1414,7 @@ function editStudent(studentId) {
         .find(s => String(s.studentId) === String(studentId));
     const student = rosterStudent;
     if (student) {
-        document.getElementById('student-id').value = student.studentId; // Set hidden ID
-        document.getElementById('student-id-input').value = student.studentId;
+        document.getElementById('student-id').value = student.studentId;
         document.getElementById('student-first-name').value = student.firstName;
         document.getElementById('student-last-name').value = student.lastName;
         document.getElementById('student-dob').value = student.dob || '';
@@ -1366,6 +1423,25 @@ function editStudent(studentId) {
         document.getElementById('student-email').value = student.email || '';
         // 'student-class-id' dropdown is hidden for faculty, no need to set
         document.getElementById('student-notes').value = student.notes || '';
+        // Anbiyam + sacraments
+        const anbiyamEl = document.getElementById('student-anbiyam');
+        if (anbiyamEl) anbiyamEl.value = student.anbiyamName || '';
+        const fhcEl = document.getElementById('student-first-communion');
+        if (fhcEl) fhcEl.checked = student.receivedFirstCommunion === true;
+        const confEl = document.getElementById('student-confirmation');
+        if (confEl) confEl.checked = student.receivedConfirmation === true;
+        // A4: Behavior note
+        const behaviorNoteEl = document.getElementById('student-behavior-note');
+        if (behaviorNoteEl) behaviorNoteEl.value = student.behaviorNote || '';
+        const behaviorVisEl = document.getElementById('student-behavior-visibility');
+        if (behaviorVisEl) behaviorVisEl.checked = student.behaviorVisibility !== false;
+        // B2: Family contact fields
+        const fn = document.getElementById('student-father-name'); if (fn) fn.value = student.fatherName || '';
+        const fp = document.getElementById('student-father-phone'); if (fp) fp.value = student.fatherPhone || '';
+        const mn = document.getElementById('student-mother-name'); if (mn) mn.value = student.motherName || '';
+        const mp = document.getElementById('student-mother-phone'); if (mp) mp.value = student.motherPhone || '';
+        const en = document.getElementById('student-emergency-name'); if (en) en.value = student.emergencyName || '';
+        const ep = document.getElementById('student-emergency-phone'); if (ep) ep.value = student.emergencyPhone || '';
         document.getElementById('student-modal-title').textContent = 'Edit Student';
         document.getElementById('student-modal').style.display = 'flex';
     }
@@ -1380,8 +1456,21 @@ async function deleteStudent(studentId) {
     if (result.isConfirmed) {
         showSpinner();
         try {
-            const docRef = doc(window.db, 'students', String(studentId));
-            await deleteDoc(docRef);
+            const activeYearId = getActiveAcademicYearId();
+            const classId = currentUserData?.classId;
+            // Delete master profile
+            await deleteDoc(doc(window.db, 'students', String(studentId)));
+            // Delete enrollment record for the active year so the roster listener removes the student
+            if (activeYearId && classId) {
+                const enrollId = `${activeYearId}_${classId}_${studentId}`;
+                await deleteDoc(doc(window.db, 'enrollments', enrollId));
+            }
+
+            // Update the local cache immediately (realtime may be delayed/disabled).
+            DATA_MODELS.students = (DATA_MODELS.students || []).filter(s => String(s.studentId) !== String(studentId));
+            DATA_MODELS.enrollments = (DATA_MODELS.enrollments || []).filter(e => String(e.studentId) !== String(studentId));
+            renderStudentsTable();
+
             createAuditLog('student_deleted', { studentId: String(studentId) });
             showSuccess('Student deleted.');
         } catch (err) {
@@ -1397,6 +1486,21 @@ function viewStudentDetails(studentId) {
         .find(s => String(s.studentId) === String(studentId));
     if (!student) return showError('Student not found.');
 
+    const behaviorNote = student.behaviorNote ? escapeHtml(student.behaviorNote) : '<em>None</em>';
+    const behaviorVis = student.behaviorVisibility !== false ? 'Visible to student' : 'Hidden from student';
+    // B2: Family & Contact card
+    const waLink = (phone, name) => phone ? `<a href="https://wa.me/${phone.replace(/\D/g,'')}" target="_blank" title="WhatsApp ${escapeHtml(name)}"><i class="fab fa-whatsapp" style="color:#25D366;"></i> ${escapeHtml(phone)}</a>` : '<em style="color:var(--text-muted)">N/A</em>';
+    const familyHtml = (student.fatherName || student.motherName || student.emergencyName) ? `
+        <hr style="margin:10px 0;">
+        <strong style="font-size:0.92rem;">Family &amp; Contact</strong>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px 12px;margin-top:6px;font-size:0.9rem;">
+            <p><strong>Father:</strong> ${escapeHtml(student.fatherName || 'N/A')}</p>
+            <p><strong>Father Phone:</strong> ${waLink(student.fatherPhone, 'father')}</p>
+            <p><strong>Mother:</strong> ${escapeHtml(student.motherName || 'N/A')}</p>
+            <p><strong>Mother Phone:</strong> ${waLink(student.motherPhone, 'mother')}</p>
+            <p><strong>Emergency:</strong> ${escapeHtml(student.emergencyName || 'N/A')}</p>
+            <p><strong>Emergency Phone:</strong> ${waLink(student.emergencyPhone, 'emergency contact')}</p>
+        </div>` : '';
     const detailsHtml = `
         <p><strong>Student ID:</strong> ${escapeHtml(student.studentId)}</p>
         <p><strong>Name:</strong> ${escapeHtml(student.firstName)} ${escapeHtml(student.lastName)}</p>
@@ -1406,6 +1510,10 @@ function viewStudentDetails(studentId) {
         <p><strong>Email:</strong> ${escapeHtml(student.email || 'N/A')}</p>
         <p><strong>Class:</strong> ${escapeHtml(student.classId || 'N/A')}</p>
         <p><strong>Notes:</strong> ${escapeHtml(student.notes || 'None')}</p>
+        <hr style="margin:10px 0;">
+        <p><strong>Behavior Note:</strong> ${behaviorNote}</p>
+        <p><strong>Behavior Visibility:</strong> ${behaviorVis}</p>
+        ${familyHtml}
     `;
 
     document.getElementById('student-details-content').innerHTML = detailsHtml;
@@ -1483,13 +1591,13 @@ async function saveSession() {
 
     if (!date) return showError('Please select a date');
 
-    if (DATA_MODELS.sessions.some(s => s.id === sessionId || s.date === date)) {
+    if (DATA_MODELS.sessions.some(s => s.id === sessionId || (s.sessionDate || s.date) === date)) {
         return showError('A session already exists for this date');
     }
 
     const session = withAcademicYear({
         id: sessionId,
-        date, status, noClassReason,
+        sessionDate: date, status, noClassReason,
         createdAt: new Date().toISOString(),
     });
 
@@ -1497,7 +1605,7 @@ async function saveSession() {
     try {
         const sessionRef = doc(window.db, 'sessions', session.id);
         await setDoc(sessionRef, session);
-        createAuditLog('session_created', { date: session.date, status: session.status });
+        createAuditLog('session_created', { date: session.sessionDate, status: session.status });
         document.getElementById('session-modal').style.display = 'none';
         showSuccess('Session created!');
     } catch (err) {
@@ -1517,9 +1625,18 @@ async function deleteSession(sessionId) {
     if (result.isConfirmed) {
         showSpinner();
         try {
-            const docRef = doc(window.db, 'sessions', sessionId);
-            await deleteDoc(docRef);
-            createAuditLog('session_deleted', { sessionId: sessionId, date: session?.date });
+            // Delete session document
+            await deleteDoc(doc(window.db, 'sessions', sessionId));
+            // Delete all attendance records for this session to keep stats accurate
+            const attSnap = await window.getDocs(
+                window.query(window.collection(window.db, 'attendance'), window.where('sessionId', '==', sessionId))
+            );
+            if (!attSnap.empty) {
+                const batch = window.writeBatch(window.db);
+                attSnap.docs.forEach(d => batch.delete(d.ref));
+                await batch.commit();
+            }
+            createAuditLog('session_deleted', { sessionId, date: session?.date, attendanceRecordsDeleted: attSnap?.size || 0 });
             showSuccess('Session deleted.');
         } catch (err) {
             showError('Failed to delete session: ' + err.message);
@@ -1565,22 +1682,26 @@ function renderAttendanceForm(sessionId) {
             </thead>
             <tbody>`;
 
-    // Sort students by ID for taking attendance too
-    const sortedStudents = getCurrentAcademicYearRoster(DATA_MODELS.students, DATA_MODELS.enrollments || [])
-        .filter(student => String(student.classId || '') === String(currentUserData.classId || ''))
-        .sort((a, b) =>
-            String(a.studentId).localeCompare(String(b.studentId), undefined, { numeric: true })
-        );
+    const myClassId = String(currentUserData.classId || '');
+    // Build class roster; fall back to raw students list if enrollment data is thin
+    let rosterStudents = getCurrentAcademicYearRoster(DATA_MODELS.students, DATA_MODELS.enrollments || [])
+        .filter(student => String(student.classId || '') === myClassId);
+    if (rosterStudents.length === 0) {
+        rosterStudents = DATA_MODELS.students.filter(s => String(s.classId || '') === myClassId);
+    }
+    const sortedStudents = rosterStudents.sort((a, b) =>
+        String(a.studentId).localeCompare(String(b.studentId), undefined, { numeric: true })
+    );
 
     sortedStudents.forEach(student => {
         const existing = DATA_MODELS.attendance.find(a => a.sessionId === sessionId && a.studentId === student.studentId);
         const status = existing ? existing.status : 'Present';
         html += `
             <tr>
-                <td>${escapeHtml(student.studentId)}</td>
+                <td>${escapeHtml(student.registerNo ?? student.studentId)}</td>
                 <td>${escapeHtml(student.firstName)} ${escapeHtml(student.lastName)}</td>
                 <td>
-                    <select class="attendance-status" data-student="${escapeHtml(student.studentId)}">
+                    <select class="attendance-status" data-student="${escapeHtml(student.studentId)}" data-class="${escapeHtml(student.classId || myClassId)}">
                         <option value="Present" ${status === 'Present' ? 'selected' : ''}>Present</option>
                         <option value="Absent" ${status === 'Absent' ? 'selected' : ''}>Absent</option>
                         <option value="Late" ${status === 'Late' ? 'selected' : ''}>Late</option>
@@ -1606,25 +1727,59 @@ window.saveAttendance = async (sessionId) => {
     const classId = currentUserData.classId;
     if (!classId) return showError('Error: Faculty class ID not found.');
 
+    const activeYearId = getActiveAcademicYearId()
+        || window.APP_CONTEXT?.activeAcademicYearId
+        || DATA_MODELS.appConfig?.activeAcademicYearId;
+    if (!activeYearId) return showError('No active academic year found. Cannot save attendance.');
+
     showSpinner();
     try {
         const { doc, setDoc } = window;
+        const records = []; // { obj } parallel to promises
         const promises = [];
         for (const select of inputs) {
             const studentId = select.dataset.student;
+            if (!studentId) continue;
             const status = select.value;
-
-            const attendanceObj = withAcademicYear({
-                sessionId, studentId, status,
-                updatedAt: new Date().toISOString(),
-                classId: classId, // Faculty uses their own class ID
-            });
             const docId = `${sessionId}_${studentId}`;
+            const attendanceObj = {
+                id: docId,
+                sessionId, studentId, status, classId,
+                academicYearId: activeYearId,
+                updatedAt: new Date().toISOString(),
+            };
             const docRef = doc(window.db, 'attendance', docId);
+            records.push(attendanceObj);
             promises.push(setDoc(docRef, attendanceObj, { merge: true }));
         }
-        await Promise.all(promises);
-        showSuccess('Attendance saved successfully!');
+        const results = await Promise.allSettled(promises);
+        const failed = results.filter(r => r.status === 'rejected');
+        const saved = results.length - failed.length;
+
+        // Update local cache for each successful save so views reflect reality
+        // immediately (realtime updates may be delayed or disabled).
+        results.forEach((res, i) => {
+            if (res.status !== 'fulfilled') return;
+            const obj = records[i];
+            const idx = DATA_MODELS.attendance.findIndex(a =>
+                a.sessionId === obj.sessionId && String(a.studentId) === String(obj.studentId));
+            if (idx >= 0) DATA_MODELS.attendance[idx] = { ...DATA_MODELS.attendance[idx], ...obj };
+            else DATA_MODELS.attendance.push(obj);
+        });
+
+        createAuditLog('attendance_saved', { sessionId, studentCount: saved, failed: failed.length, classId });
+        if (failed.length > 0) {
+            console.error('Attendance save failures:', failed.map(r => r.reason?.message));
+            showError(`${saved} saved, ${failed.length} failed. Check console for details.`);
+        } else {
+            showSuccess('Attendance saved successfully!');
+        }
+
+        // Refresh any open day-wise report that reads attendance
+        const reportSel = document.getElementById('report-session-date');
+        if (reportSel && reportSel.value && typeof generateDaywiseAttendanceReport === 'function') {
+            generateDaywiseAttendanceReport();
+        }
     } catch (err) {
         showError('Error saving attendance: ' + err.message);
     } finally {
@@ -1707,8 +1862,8 @@ async function saveAssessment() {
     }
 
     const assessment = withAcademicYear({
-        id: generateId(),
-        name, date, totalMarks, classId
+        id: crypto.randomUUID(),
+        name, assessmentDate: date, totalMarks, classId
     });
 
     showSpinner();
@@ -1834,6 +1989,7 @@ async function saveScores() {
             return setDoc(docRef, s, { merge: true });
         });
         await Promise.all(promises);
+        createAuditLog('scores_saved', { assessmentId, assessmentName: assessment.name, classId, studentCount: toWrite.length });
         document.getElementById('scores-modal').style.display = 'none';
         window._currentScoresAssessmentId = null;
         showSuccess('Scores saved successfully!');
@@ -1952,18 +2108,31 @@ function generateOverallAttendanceReport() {
     const container = document.getElementById('overall-report-container');
     if (!container) return;
 
-    const sessions = DATA_MODELS.sessions
+    let sessions = DATA_MODELS.sessions
         .filter(s => s.status === 'Available')
-        .sort((a, b) => new Date(a.date) - new Date(b.date));
+        .sort((a, b) => new Date(a.sessionDate || a.date) - new Date(b.sessionDate || b.date));
 
-    const students = getCurrentAcademicYearRoster(DATA_MODELS.students, DATA_MODELS.enrollments || [])
-        .filter(s => String(s.classId || '') === String(currentUserData?.classId || ''))
-        .sort((a, b) =>
-            String(a.studentId).localeCompare(String(b.studentId), undefined, { numeric: true })
-        );
+    // B7: Apply date filter
+    if (ATTENDANCE_DATE_FILTER.from) {
+        sessions = sessions.filter(s => (s.sessionDate || s.date) >= ATTENDANCE_DATE_FILTER.from);
+    }
+    if (ATTENDANCE_DATE_FILTER.to) {
+        sessions = sessions.filter(s => (s.sessionDate || s.date) <= ATTENDANCE_DATE_FILTER.to);
+    }
 
+    let students = getCurrentAcademicYearRoster(DATA_MODELS.students, DATA_MODELS.enrollments || [])
+        .filter(s => String(s.classId || '') === String(currentUserData?.classId || ''));
+    if (students.length === 0) {
+        students = DATA_MODELS.students.filter(s => String(s.classId || '') === String(currentUserData?.classId || ''));
+    }
+    students = students.sort((a, b) =>
+        String(a.registerNo ?? a.studentId).localeCompare(String(b.registerNo ?? b.studentId), undefined, { numeric: true })
+    );
+
+    const overallDownloadBtn = document.getElementById('download-overall-report-btn');
     if (sessions.length === 0 || students.length === 0) {
         container.innerHTML = '<p>No data available.</p>';
+        if (overallDownloadBtn) overallDownloadBtn.style.display = 'none';
         return;
     }
 
@@ -2005,7 +2174,10 @@ function generateOverallAttendanceReport() {
             </div>
         </div>
 
-        <div style="margin: 20px 0; text-align: right;">
+        <div style="margin: 20px 0; text-align: right; display: flex; gap: 10px; justify-content: flex-end;">
+            <button class="btn btn-danger" id="export-attendance-pdf">
+                <i class="fas fa-file-pdf"></i> Export Matrix PDF
+            </button>
             <button class="btn btn-success" id="export-attendance-csv">
                 <i class="fas fa-file-csv"></i> Export Matrix CSV
             </button>
@@ -2016,7 +2188,7 @@ function generateOverallAttendanceReport() {
             <thead>
                 <tr>
                     <th style="position: sticky; left: 0; background: #f5f7fa; z-index: 2; min-width: 150px;">Student</th>
-                    ${sessions.map(s => `<th style="text-align: center;">${formatDate(s.date).split(',')[0]}</th>`).join('')}
+                    ${sessions.map(s => `<th style="text-align: center;">${formatDate(s.sessionDate || s.date).split(',')[0]}</th>`).join('')}
                     <th style="text-align: center;">%</th>
                 </tr>
             </thead>
@@ -2049,7 +2221,7 @@ function generateOverallAttendanceReport() {
         html += `
             <tr>
                 <td style="position: sticky; left: 0; background: var(--bg-color-alt); z-index: 1; font-weight: 500; border-right: 1px solid #eee;">
-                    ${escapeHtml(student.firstName)} <small style="color:gray; display:block;">(${student.studentId})</small>
+                    ${escapeHtml(student.firstName)} ${escapeHtml(student.lastName)} <small style="color:gray; display:block;">(#${escapeHtml(String(student.registerNo ?? student.studentId))})</small>
                 </td>
                 ${rowCells}
                 <td style="font-weight: bold; text-align: center; ${color}">${percentage}%</td>
@@ -2059,9 +2231,11 @@ function generateOverallAttendanceReport() {
 
     html += '</tbody></table></div>';
     container.innerHTML = html;
+    if (overallDownloadBtn) overallDownloadBtn.style.display = 'inline-flex';
 
-    // Re-attach the export listener
+    // Re-attach the export listeners
     document.getElementById('export-attendance-csv')?.addEventListener('click', exportAttendanceToCsv);
+    document.getElementById('export-attendance-pdf')?.addEventListener('click', exportAttendanceToPdf);
 }
 
 /**
@@ -2075,29 +2249,30 @@ function exportAttendanceToCsv() {
 
     const sessions = DATA_MODELS.sessions
         .filter(s => s.status === 'Available')
-        .sort((a, b) => new Date(a.date) - new Date(b.date));
+        .sort((a, b) => new Date(a.sessionDate || a.date) - new Date(b.sessionDate || b.date));
 
     if (sessions.length === 0) return showError('No class sessions found.');
 
     // 1. Build the Header Row
-    // Fix: Wrap date in quotes -> "${date}"
-    let csvContent = "Student ID,Name";
+    let csvContent = "Reg No,Name";
     sessions.forEach(session => {
-        csvContent += `,"${formatDate(session.date)}"`;
+        csvContent += `,"${formatDate(session.sessionDate || session.date)}"`;
     });
     csvContent += ",Total Present,Total Sessions,Percentage\n";
 
     // 2. Sort Students
-    const students = getCurrentAcademicYearRoster(DATA_MODELS.students, DATA_MODELS.enrollments || [])
-        .filter(student => String(student.classId || '') === String(currentUserData.classId || ''))
-        .sort((a, b) =>
-            String(a.studentId).localeCompare(String(b.studentId), undefined, { numeric: true })
-        );
+    let students = getCurrentAcademicYearRoster(DATA_MODELS.students, DATA_MODELS.enrollments || [])
+        .filter(student => String(student.classId || '') === String(currentUserData.classId || ''));
+    if (students.length === 0) {
+        students = DATA_MODELS.students.filter(s => String(s.classId || '') === String(currentUserData.classId || ''));
+    }
+    students = students.sort((a, b) =>
+        String(a.registerNo ?? a.studentId).localeCompare(String(b.registerNo ?? b.studentId), undefined, { numeric: true })
+    );
 
     // 3. Build Data Rows
     students.forEach(student => {
-        // Wrap Name in quotes to handle commas in names (e.g., "Doe, John")
-        let row = `"${student.studentId}","${student.firstName} ${student.lastName}"`;
+        let row = `"${student.registerNo ?? student.studentId}","${student.firstName} ${student.lastName}"`;
         let presentCount = 0;
 
         sessions.forEach(session => {
@@ -2125,6 +2300,99 @@ function exportAttendanceToCsv() {
     downloadCSV(csvContent, `Attendance_Matrix_${new Date().toISOString().slice(0, 10)}.csv`);
 }
 
+function exportAttendanceToPdf() {
+    if (DATA_MODELS.attendance.length === 0 || DATA_MODELS.sessions.length === 0) {
+        return showError('No data to export.');
+    }
+
+    const sessions = DATA_MODELS.sessions
+        .filter(s => s.status === 'Available')
+        .sort((a, b) => new Date(a.sessionDate || a.date) - new Date(b.sessionDate || b.date));
+    if (sessions.length === 0) return showError('No class sessions found.');
+
+    let students = getCurrentAcademicYearRoster(DATA_MODELS.students, DATA_MODELS.enrollments || [])
+        .filter(s => String(s.classId || '') === String(currentUserData.classId || ''));
+    if (students.length === 0) {
+        students = DATA_MODELS.students.filter(s => String(s.classId || '') === String(currentUserData.classId || ''));
+    }
+    students = students.sort((a, b) =>
+        String(a.registerNo ?? a.studentId).localeCompare(String(b.registerNo ?? b.studentId), undefined, { numeric: true })
+    );
+
+    const className = (DATA_MODELS.classes || []).find(c => c.id === currentUserData.classId)?.name || currentUserData.classId || 'Class';
+
+    const headerCols = sessions.map(s => `<th>${formatDate(s.sessionDate || s.date).split(',')[0]}</th>`).join('');
+
+    const bodyRows = students.map((student, idx) => {
+        let presentCount = 0;
+        const cells = sessions.map(session => {
+            const rec = DATA_MODELS.attendance.find(a => a.sessionId === session.id && a.studentId === student.studentId);
+            const status = rec ? rec.status : 'Absent';
+            let code = 'A'; let color = '#ef4444';
+            if (status === 'Present') { code = 'P'; color = '#16a34a'; presentCount++; }
+            else if (status === 'Late') { code = 'L'; color = '#d97706'; presentCount++; }
+            else if (status === 'Excused') { code = 'E'; color = '#6366f1'; }
+            return `<td style="text-align:center;color:${color};font-weight:600;">${code}</td>`;
+        }).join('');
+        const pct = Math.round((presentCount / sessions.length) * 100);
+        const pctColor = pct < 75 ? '#ef4444' : '#16a34a';
+        return `<tr>
+            <td style="text-align:center;">${idx + 1}</td>
+            <td style="white-space:nowrap;">${escapeHtml(String(student.registerNo ?? student.studentId))}</td>
+            <td style="white-space:nowrap;">${escapeHtml(student.firstName)} ${escapeHtml(student.lastName)}</td>
+            ${cells}
+            <td style="text-align:center;font-weight:700;color:${pctColor};">${pct}%</td>
+        </tr>`;
+    }).join('');
+
+    // Scale font smaller when many sessions so table fits on landscape page
+    const colCount = sessions.length + 4;
+    const fontSize = colCount > 30 ? '7px' : colCount > 20 ? '8px' : colCount > 12 ? '9px' : '10px';
+
+    const printHtml = `<!DOCTYPE html><html><head><title>Attendance Matrix — ${escapeHtml(className)}</title>
+<style>
+  @page { size: A4 landscape; margin: 8mm; }
+  * { box-sizing: border-box; }
+  body { font-family: Arial, sans-serif; font-size: ${fontSize}; margin: 0; padding: 0; }
+  h2, h3 { margin: 0 0 4px; }
+  h2 { font-size: 13px; }
+  h3 { font-size: 10px; color: #555; font-weight: normal; }
+  table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+  th, td { border: 1px solid #ccc; padding: 2px 3px; overflow: hidden; }
+  th { background: #f1f5f9; font-size: calc(${fontSize} - 0px); text-align: center; }
+  td:nth-child(1) { width: 22px; }
+  td:nth-child(2) { width: 28px; }
+  td:nth-child(3) { width: 80px; }
+  td:last-child  { width: 28px; }
+  tr { page-break-inside: avoid; }
+  thead { display: table-header-group; }
+  .header-block { margin-bottom: 6px; }
+  p.legend { font-size: 8px; color: #666; margin: 4px 0 0; }
+</style>
+</head>
+<body>
+<div class="header-block">
+  <h2>Attendance Matrix — ${escapeHtml(className)} &nbsp;|&nbsp; St. Jude's Catechism</h2>
+  <h3>Academic Year: ${escapeHtml(String(currentUserData.academicYear || ''))} &nbsp;|&nbsp; Generated: ${new Date().toLocaleDateString('en-IN')}</h3>
+  <p class="legend">P = Present &nbsp; A = Absent &nbsp; L = Late &nbsp; E = Excused</p>
+</div>
+<table>
+  <thead>
+    <tr>
+      <th>#</th><th>Reg.</th><th style="text-align:left;">Student Name</th>
+      ${headerCols}
+      <th>%</th>
+    </tr>
+  </thead>
+  <tbody>${bodyRows}</tbody>
+</table>
+<script>window.onload = () => { window.print(); }<\/script>
+</body></html>`;
+
+    const w = window.open('', '_blank');
+    if (w) { w.document.write(printHtml); w.document.close(); }
+}
+
 // Dropdown version of Save (Faculty)
 window.saveAttendance = async (sessionId) => {
     const inputs = document.querySelectorAll('.attendance-status');
@@ -2133,25 +2401,59 @@ window.saveAttendance = async (sessionId) => {
     const classId = currentUserData.classId;
     if (!classId) return showError('Error: Faculty class ID not found.');
 
+    const activeYearId = getActiveAcademicYearId()
+        || window.APP_CONTEXT?.activeAcademicYearId
+        || DATA_MODELS.appConfig?.activeAcademicYearId;
+    if (!activeYearId) return showError('No active academic year found. Cannot save attendance.');
+
     showSpinner();
     try {
         const { doc, setDoc } = window;
+        const records = []; // { obj } parallel to promises
         const promises = [];
         for (const select of inputs) {
             const studentId = select.dataset.student;
+            if (!studentId) continue;
             const status = select.value;
-
-            const attendanceObj = withAcademicYear({
-                sessionId, studentId, status,
-                updatedAt: new Date().toISOString(),
-                classId: classId, // Faculty uses their own class ID
-            });
             const docId = `${sessionId}_${studentId}`;
+            const attendanceObj = {
+                id: docId,
+                sessionId, studentId, status, classId,
+                academicYearId: activeYearId,
+                updatedAt: new Date().toISOString(),
+            };
             const docRef = doc(window.db, 'attendance', docId);
+            records.push(attendanceObj);
             promises.push(setDoc(docRef, attendanceObj, { merge: true }));
         }
-        await Promise.all(promises);
-        showSuccess('Attendance saved successfully!');
+        const results = await Promise.allSettled(promises);
+        const failed = results.filter(r => r.status === 'rejected');
+        const saved = results.length - failed.length;
+
+        // Update local cache for each successful save so views reflect reality
+        // immediately (realtime updates may be delayed or disabled).
+        results.forEach((res, i) => {
+            if (res.status !== 'fulfilled') return;
+            const obj = records[i];
+            const idx = DATA_MODELS.attendance.findIndex(a =>
+                a.sessionId === obj.sessionId && String(a.studentId) === String(obj.studentId));
+            if (idx >= 0) DATA_MODELS.attendance[idx] = { ...DATA_MODELS.attendance[idx], ...obj };
+            else DATA_MODELS.attendance.push(obj);
+        });
+
+        createAuditLog('attendance_saved', { sessionId, studentCount: saved, failed: failed.length, classId });
+        if (failed.length > 0) {
+            console.error('Attendance save failures:', failed.map(r => r.reason?.message));
+            showError(`${saved} saved, ${failed.length} failed. Check console for details.`);
+        } else {
+            showSuccess('Attendance saved successfully!');
+        }
+
+        // Refresh any open day-wise report that reads attendance
+        const reportSel = document.getElementById('report-session-date');
+        if (reportSel && reportSel.value && typeof generateDaywiseAttendanceReport === 'function') {
+            generateDaywiseAttendanceReport();
+        }
     } catch (err) {
         showError('Error saving attendance: ' + err.message);
     } finally {
@@ -2250,10 +2552,9 @@ async function importCSV() {
     try {
         const { doc, setDoc } = window;
         const promises = studentsToImport.map(async student => {
-            const yearStudent = withAcademicYear(student);
             const studentRef = doc(window.db, 'students', String(student.studentId));
-            await setDoc(studentRef, yearStudent, { merge: true });
-            await upsertEnrollmentForStudent(yearStudent, currentUserData?.uid || 'faculty');
+            await setDoc(studentRef, student, { merge: true });
+            await upsertEnrollmentForStudent(withAcademicYear(student), currentUserData?.uid || 'faculty');
         });
         await Promise.all(promises);
         document.getElementById('import-modal').style.display = 'none';
@@ -2327,11 +2628,14 @@ function generateDaywiseAttendanceReport() {
     }
 
     // Get students (Faculty view is already scoped to their class)
-    const allStudents = getCurrentAcademicYearRoster(DATA_MODELS.students, DATA_MODELS.enrollments || [])
-        .filter(student => String(student.classId || '') === String(currentUserData.classId || ''))
-        .sort((a, b) =>
-            a.lastName.localeCompare(b.lastName) || a.firstName.localeCompare(b.firstName)
-        );
+    let allStudents = getCurrentAcademicYearRoster(DATA_MODELS.students, DATA_MODELS.enrollments || [])
+        .filter(student => String(student.classId || '') === String(currentUserData.classId || ''));
+    if (allStudents.length === 0) {
+        allStudents = DATA_MODELS.students.filter(s => String(s.classId || '') === String(currentUserData.classId || ''));
+    }
+    allStudents = allStudents.sort((a, b) =>
+        (a.lastName || '').localeCompare(b.lastName || '') || (a.firstName || '').localeCompare(b.firstName || '')
+    );
 
     // 1. Separate students into two buckets
     const presentStudents = [];
@@ -2387,6 +2691,54 @@ function generateDaywiseAttendanceReport() {
 
     container.innerHTML = finalHtml;
     printBtn.style.display = 'block';
+}
+
+function exportDaywiseReportAsPdf() {
+    const select = document.getElementById('report-session-date');
+    const sessionId = select?.value;
+    const session = sessionId ? DATA_MODELS.sessions.find(s => s.id === sessionId) : null;
+    if (!session) return showError('Please select a session first.');
+
+    const container = document.getElementById('daywise-report-container');
+    if (!container || !container.innerHTML.trim()) return showError('No report to export. Please generate the report first.');
+
+    const className = (DATA_MODELS.classes || []).find(c => c.id === currentUserData.classId)?.name || currentUserData.classId || 'Class';
+    const sessionDate = formatDate(session.sessionDate || session.date);
+
+    const printHtml = `<!DOCTYPE html><html><head><title>Day-wise Report — ${escapeHtml(sessionDate)}</title>
+<style>
+  @page { size: A4 portrait; margin: 15mm; }
+  body { font-family: Arial, sans-serif; font-size: 12px; margin: 0; padding: 0; color: #222; }
+  h2 { font-size: 16px; margin: 0 0 4px; }
+  h3 { font-size: 12px; font-weight: normal; color: #555; margin: 0 0 14px; }
+  h4 { font-size: 13px; margin: 16px 0 6px; }
+  h5 { font-size: 12px; margin: 10px 0 4px; }
+  table { width: 100%; border-collapse: collapse; margin-bottom: 14px; }
+  th, td { border: 1px solid #ccc; padding: 5px 8px; text-align: left; }
+  th { background: #f1f5f9; }
+  tr { page-break-inside: avoid; }
+  .text-success { color: #16a34a; font-weight: 600; }
+  .text-danger  { color: #ef4444; font-weight: 600; }
+  hr { border: none; border-top: 1px solid #ddd; margin: 14px 0; }
+  p.footer { font-size: 9px; color: #999; margin-top: 20px; }
+</style>
+</head><body>
+<h2>Day-wise Attendance Report — ${escapeHtml(className)}</h2>
+<h3>Session: ${escapeHtml(sessionDate)} &nbsp;|&nbsp; St. Jude's Catechism &nbsp;|&nbsp; Generated: ${new Date().toLocaleDateString('en-IN')}</h3>
+${container.innerHTML}
+<p class="footer">Printed by St. Jude's Catechism Management System</p>
+<script>window.onload = () => window.print();<\/script>
+</body></html>`;
+
+    const blob = new Blob([printHtml], { type: 'text/html' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.target = '_blank';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
 }
 
 // Helper to switch back to the list view
@@ -2504,17 +2856,24 @@ function viewAssessmentReport(assessmentId) {
                     <th>Name</th>
                     <th>Marks</th>
                     <th>%</th>
+                    <th>Grade</th>
                 </tr>
             </thead>
             <tbody>
     `;
 
     reportRows.forEach(row => {
+        const pct = row.marks !== null ? Math.round((row.marks / assessment.totalMarks) * 100) : null;
+        const gradeObj = (typeof getLetterGrade === 'function') ? getLetterGrade(pct) : null;
+        const gradeBadge = gradeObj
+            ? `<span class="grade-badge ${gradeObj.css}">${gradeObj.grade}</span>`
+            : '<span style="color:orange">Absent</span>';
         html += `<tr>
             <td>${escapeHtml(row.student.studentId)}</td>
             <td>${escapeHtml(row.student.firstName)} ${escapeHtml(row.student.lastName)}</td>
             <td>${row.marks !== null ? row.marks : '-'}</td>
             <td>${row.statusHtml}</td>
+            <td>${gradeBadge}</td>
         </tr>`;
     });
 
@@ -2712,69 +3071,7 @@ async function previewYearMigration() {
     }
 }
 
-/**
- * PHASE 2: Execute migration - import students from previous year
- */
-async function runYearMigration() {
-    if (!window.migrationPreviewData) {
-        return showError('Please refresh preview first.');
-    }
-
-    const { previousYearEnrollments, duplicateStudentIds, activeYearId, previousYearId } = window.migrationPreviewData;
-
-    const studentsToMigrate = previousYearEnrollments.filter(enroll => !duplicateStudentIds.has(enroll.studentId));
-
-    if (studentsToMigrate.length === 0) {
-        return showError('All students in previous year are already enrolled in current year.');
-    }
-
-    const result = await showConfirm(
-        `Migrate ${studentsToMigrate.length} Student${studentsToMigrate.length !== 1 ? 's' : ''}?`,
-        `This will import ${studentsToMigrate.length} student(s) from previous year to current year. Existing students will be skipped.`
-    );
-
-    if (!result.isConfirmed) return;
-
-    showSpinner('Migrating students...');
-    try {
-        let migratedCount = 0;
-
-        for (const prevEnroll of studentsToMigrate) {
-            // Get student data from previous year
-            const student = (DATA_MODELS.students || []).find(s => s.studentId === prevEnroll.studentId);
-            if (!student) continue;
-
-            // Create new enrollment for current year with auto register number
-            const newEnrollment = await createOrUpdateEnrollment(
-                activeYearId,
-                currentUserData.classId,
-                student.studentId,
-                { migratedFromYearId: previousYearId }
-            );
-
-            if (newEnrollment) {
-                migratedCount++;
-                console.log(`Migrated: ${student.studentId} -> Register #${newEnrollment.registerNo}`);
-            }
-        }
-
-        createAuditLog('year_migration_completed', {
-            activeYearId,
-            previousYearId,
-            migratedCount,
-            classId: currentUserData.classId
-        });
-
-        await initializeFacultyMigrationCard();
-        showSuccess('Migration Complete!', `Successfully imported ${migratedCount} student(s) to current year.`);
-
-    } catch (err) {
-        console.error('Migration error:', err);
-        showError('Migration failed: ' + err.message);
-    } finally {
-        hideSpinner();
-    }
-}
+// Migration is admin-only — duplicate definition removed
 
 // -----------------------------------------------------------
 // PHASE 3: STUDENT QUICK ONBOARDING
@@ -2873,31 +3170,13 @@ async function submitQuickOnboarding() {
         const studentRef = doc(window.db, 'students', studentId);
         await setDoc(studentRef, studentPayload, { merge: true });
 
-        // Create enrollment with auto register number
-        const enrollment = await createOrUpdateEnrollment(
-            activeYearId,
-            classId,
-            studentId,
-            { registrationMethod: 'quick_onboarding' }
-        );
+        // Log audit entry (enrollment is handled by admin)
+        createAuditLog('student_quick_onboarding', { studentId, firstName, lastName, classId });
 
-        if (!enrollment || !enrollment.registerNo) {
-            throw new Error('Failed to auto-assign register number.');
-        }
-
-        // Log audit entry
-        createAuditLog('student_quick_onboarding', {
-            studentId,
-            firstName,
-            lastName,
-            registerNo: enrollment.registerNo,
-            classId
-        });
-
-        // Close modal and refresh
-        closeModal('quick-onboard-modal');
-        await reloadAllData();
-        showSuccess(`Student Registered!`, `${firstName} ${lastName} registered as #${enrollment.registerNo}`);
+        // Close modal (realtime listeners will pick up the new student automatically)
+        const qoModal = document.getElementById('quick-onboard-modal');
+        if (qoModal) qoModal.style.display = 'none';
+        showSuccess(`Student Added!`, `${firstName} ${lastName} added. Ask admin to complete class enrollment.`);
 
     } catch (err) {
         console.error('Quick onboarding error:', err);
@@ -2915,4 +3194,544 @@ function setupQuickOnboardingListeners() {
     if (submitBtn) {
         submitBtn.addEventListener('click', submitQuickOnboarding);
     }
+}
+
+// -----------------
+// 🔄 A6: STUDENT TRANSFER (FACULTY)
+// -----------------
+// Transfer and class assignment functions are admin-only — removed from faculty
+
+// -----------------
+// 📢 B8: ANNOUNCEMENTS (FACULTY READ-ONLY)
+// -----------------
+let _facultyAnnouncementsListenerActive = false;
+function startFacultyAnnouncementsListener() {
+    if (_facultyAnnouncementsListenerActive) return;
+    if (!window.db || !window.onSnapshot || !window.collection) return;
+    _facultyAnnouncementsListenerActive = true;
+    const { onSnapshot, collection, query, orderBy } = window;
+    const q = query(collection(window.db, 'announcements'), orderBy('createdAt', 'desc'));
+    const unsub = onSnapshot(q, (snap) => {
+        const all = [];
+        snap.forEach(d => all.push({ id: d.id, ...d.data() }));
+        renderFacultyAnnouncements(all);
+    }, err => {
+        _facultyAnnouncementsListenerActive = false;
+        console.warn('Announcements listener error:', err);
+    });
+    window.realtimeUnsubscribers.push(unsub);
+}
+
+function renderFacultyAnnouncements(announcements) {
+    const container = document.getElementById('faculty-announcements-list');
+    if (!container) return;
+
+    const activeYearId = getActiveAcademicYearId();
+    const filtered = (announcements || []).filter(a => {
+        if (a.audience && a.audience !== 'all' && a.audience !== 'faculty') return false;
+        if (a.expiresAt && a.expiresAt < new Date().toISOString().slice(0, 10)) return false;
+        if (a.academicYearId && String(a.academicYearId) !== String(activeYearId || '')) return false;
+        return true;
+    });
+
+    if (filtered.length === 0) {
+        container.innerHTML = '<p style="color:var(--text-color-light);">No announcements at this time.</p>';
+        return;
+    }
+
+    const sorted = [...filtered].sort((a, b) => {
+        if (a.pinned && !b.pinned) return -1;
+        if (!a.pinned && b.pinned) return 1;
+        return String(b.createdAt || '').localeCompare(String(a.createdAt || ''));
+    });
+
+    container.innerHTML = sorted.map(ann => {
+        return `
+        <div class="announcement-card ${ann.pinned ? 'pinned' : ''}">
+            ${ann.pinned ? '<i class="fas fa-thumbtack" style="color:var(--warning);margin-right:6px;"></i>' : ''}
+            <strong>${escapeHtml(ann.title || '')}</strong>
+            <p style="margin:6px 0 4px;">${escapeHtml(ann.body || '')}</p>
+            <small style="color:var(--text-color-light);">${formatDate(ann.createdAt ? ann.createdAt.slice(0, 10) : '')}</small>
+        </div>`;
+    }).join('');
+}
+
+// ==========================================
+// FEATURE A5 — Print Class Register (Faculty)
+// ==========================================
+function openPrintRegisterModal() {
+    const modal = document.getElementById('print-register-modal');
+    if (!modal) return;
+    const sesSelect = document.getElementById('register-session-select');
+    sesSelect.innerHTML = '<option value="">-- Select session --</option>';
+    const available = [...DATA_MODELS.sessions]
+        .filter(s => s.status === 'Available')
+        .sort((a, b) => new Date(b.sessionDate || b.date) - new Date(a.sessionDate || a.date));
+    available.forEach(s => {
+        const opt = document.createElement('option');
+        opt.value = s.id;
+        opt.textContent = formatDate(s.sessionDate || s.date) + (s.topic ? ` — ${s.topic}` : '');
+        sesSelect.appendChild(opt);
+    });
+    // Faculty: hide class selector, default to their own class
+    const clsGroup = document.getElementById('register-class-group');
+    if (clsGroup) clsGroup.style.display = 'none';
+    modal.style.display = 'flex';
+}
+
+function printClassRegister() {
+    const sessionId = document.getElementById('register-session-select').value;
+    if (!sessionId) { showError('Please select a session.'); return; }
+
+    const session = DATA_MODELS.sessions.find(s => s.id === sessionId);
+    if (!session) { showError('Session not found.'); return; }
+
+    const classId = currentUserData?.classId;
+    let roster = getCurrentAcademicYearRoster(DATA_MODELS.students, DATA_MODELS.enrollments || [])
+        .filter(s => !classId || s.classId === classId);
+    if (roster.length === 0) {
+        roster = DATA_MODELS.students.filter(s => !classId || s.classId === classId);
+    }
+    const students = roster.sort((a, b) =>
+        String(a.registerNo ?? a.studentId).localeCompare(String(b.registerNo ?? b.studentId), undefined, { numeric: true })
+    );
+
+    const attendance = DATA_MODELS.attendance || [];
+    const sessionAtt = attendance.filter(a => a.sessionId === sessionId);
+    const className = classId ? ((DATA_MODELS.classes || []).find(c => c.id === classId)?.name || classId) : 'My Class';
+
+    let rows = students.map((s, idx) => {
+        const rec = sessionAtt.find(a => String(a.studentId) === String(s.studentId));
+        const status = rec ? rec.status : 'Absent';
+        const statusColor = status === 'Present' ? '#22c55e' : status === 'Late' ? '#f59e0b' : status === 'Excused' ? '#6366f1' : '#ef4444';
+        return `<tr>
+            <td>${idx + 1}</td>
+            <td>${escapeHtml(String(s.registerNo ?? s.studentId))}</td>
+            <td>${escapeHtml(s.firstName)} ${escapeHtml(s.lastName)}</td>
+            <td style="color:${statusColor};font-weight:600;">${escapeHtml(status)}</td>
+            <td style="width:80px;border-bottom:1px solid #999;"></td>
+        </tr>`;
+    }).join('');
+
+    const printHtml = `<!DOCTYPE html><html><head><title>Class Register</title>
+    <style>body{font-family:Arial,sans-serif;padding:24px;font-size:14px;}
+    table{width:100%;border-collapse:collapse;}th,td{border:1px solid #ccc;padding:6px 10px;text-align:left;}
+    th{background:#f1f5f9;}h2,h3{margin:4px 0;}p{margin:2px 0;color:#555;}
+    @media print{body{padding:0;}}</style></head>
+    <body>
+    <h2>Class Register — ${escapeHtml(className)}</h2>
+    <h3>Session Date: ${formatDate(session.sessionDate || session.date)}</h3>
+    <p>Total Students: ${students.length}</p>
+    <br>
+    <table>
+        <thead><tr><th>#</th><th>ID</th><th>Name</th><th>Status</th><th>Signature</th></tr></thead>
+        <tbody>${rows}</tbody>
+    </table>
+    <br><p>Printed: ${new Date().toLocaleString()}</p>
+    <script>window.onload=()=>window.print();<\/script>
+    </body></html>`;
+
+    document.getElementById('print-register-modal').style.display = 'none';
+    const blob = new Blob([printHtml], { type: 'text/html' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.target = '_blank';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+
+// ==========================================
+// FEATURE B1 — CSV Student Import (Faculty)
+// ==========================================
+function downloadCSVTemplate() {
+    const header = 'firstName,lastName,dob,guardian,phone,email,notes,fatherName,fatherPhone,motherName,motherPhone';
+    const example = 'John,Doe,2014-03-15,Mary Doe,9123456789,john@example.com,Sample note,James Doe,9000000001,Mary Doe,9000000002';
+    downloadCSV(header + '\n' + example, 'student_import_template.csv');
+}
+
+function parseStudentCSV(text) {
+    const lines = text.trim().split(/\r?\n/);
+    if (lines.length < 2) return { errors: ['CSV file has no data rows.'], rows: [] };
+    const headers = lines[0].split(',').map(h => h.trim().toLowerCase());
+    const requiredCols = ['firstname', 'lastname', 'dob', 'guardian', 'phone'];
+    const missing = requiredCols.filter(c => !headers.includes(c));
+    if (missing.length > 0) return { errors: [`Missing required columns: ${missing.join(', ')}`], rows: [] };
+
+    const rows = [];
+    const errors = [];
+    for (let i = 1; i < lines.length; i++) {
+        if (!lines[i].trim()) continue;
+        const vals = lines[i].split(',').map(v => v.trim());
+        const row = {};
+        headers.forEach((h, idx) => { row[h] = vals[idx] || ''; });
+        if (!row.firstname || !row.lastname) {
+            errors.push(`Row ${i + 1}: firstName and lastName are required.`);
+            row._error = true;
+        }
+        if (row.dob && !/^\d{4}-\d{2}-\d{2}$/.test(row.dob)) {
+            errors.push(`Row ${i + 1}: dob must be in YYYY-MM-DD format (got: "${row.dob}").`);
+            row._error = true;
+        }
+        rows.push(row);
+    }
+    return { errors, rows };
+}
+
+function openCsvImportModal() {
+    const modal = document.getElementById('csv-import-modal');
+    if (!modal) return;
+    CSV_PARSED_ROWS = [];
+    document.getElementById('csv-file-input').value = '';
+    document.getElementById('csv-preview-container').classList.add('is-hidden');
+    document.getElementById('confirm-csv-import-btn').classList.add('is-hidden');
+    document.getElementById('csv-validation-errors').innerHTML = '';
+    document.getElementById('csv-preview-info').textContent = '';
+    modal.style.display = 'flex';
+}
+
+function handleCsvFileSelect(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+        const { errors, rows } = parseStudentCSV(ev.target.result);
+        CSV_PARSED_ROWS = rows;
+        renderCsvPreview(errors, rows);
+    };
+    reader.readAsText(file);
+}
+
+function renderCsvPreview(errors, rows) {
+    const container = document.getElementById('csv-preview-container');
+    const errDiv = document.getElementById('csv-validation-errors');
+    const infoDiv = document.getElementById('csv-preview-info');
+    const theadRow = document.getElementById('csv-preview-thead-row');
+    const tbody = document.getElementById('csv-preview-tbody');
+    const confirmBtn = document.getElementById('confirm-csv-import-btn');
+    container.classList.remove('is-hidden');
+
+    if (errors.length > 0) {
+        errDiv.innerHTML = `<div style="background:var(--danger-light,#fee2e2);border:1px solid var(--danger);border-radius:6px;padding:10px;color:var(--danger);font-size:0.82rem;">
+            <strong>Issues found:</strong><ul style="margin:4px 0 0 16px;">${errors.map(e => `<li>${escapeHtml(e)}</li>`).join('')}</ul>
+        </div>`;
+    } else {
+        errDiv.innerHTML = '';
+    }
+
+    const validRows = rows.filter(r => !r._error);
+    const roster = DATA_MODELS.students || [];
+    const duplicates = validRows.filter(r => roster.some(s =>
+        s.firstName?.toLowerCase() === r.firstname?.toLowerCase() &&
+        s.lastName?.toLowerCase() === r.lastname?.toLowerCase() &&
+        s.dob === r.dob));
+    const importable = validRows.filter(r => !duplicates.includes(r));
+
+    infoDiv.textContent = `${rows.length} rows parsed — ${importable.length} will be imported, ${duplicates.length} duplicates skipped, ${rows.filter(r => r._error).length} rows with errors skipped.`;
+
+    const cols = ['firstname', 'lastname', 'dob', 'guardian', 'phone', 'email'];
+    theadRow.innerHTML = cols.map(c => `<th>${escapeHtml(c)}</th>`).concat(['<th>Status</th>']).join('');
+    tbody.innerHTML = rows.map(r => {
+        const isDup = duplicates.includes(r);
+        const statusLabel = r._error ? '<span style="color:var(--danger)">Error</span>' : isDup ? '<span style="color:var(--warning)">Duplicate</span>' : '<span style="color:var(--success)">OK</span>';
+        const rowStyle = r._error ? 'background:#fee2e2;' : isDup ? 'background:#fffbeb;' : '';
+        return `<tr style="${rowStyle}">${cols.map(c => `<td>${escapeHtml(r[c] || '')}</td>`).join('')}<td>${statusLabel}</td></tr>`;
+    }).join('');
+
+    if (importable.length > 0) {
+        confirmBtn.classList.remove('is-hidden');
+    } else {
+        confirmBtn.classList.add('is-hidden');
+    }
+}
+
+async function runCsvImport() {
+    const validRows = CSV_PARSED_ROWS.filter(r => !r._error);
+    const roster = DATA_MODELS.students || [];
+    const importable = validRows.filter(r => !roster.some(s =>
+        s.firstName?.toLowerCase() === r.firstname?.toLowerCase() &&
+        s.lastName?.toLowerCase() === r.lastname?.toLowerCase() &&
+        s.dob === r.dob));
+
+    if (importable.length === 0) { showError('No valid rows to import.'); return; }
+
+    const confirmResult = await showConfirm('Confirm Import', `Import ${importable.length} student(s)?`);
+    if (!confirmResult.isConfirmed) return;
+
+    showSpinner();
+    let successCount = 0;
+    let failCount = 0;
+    try {
+        const { doc, setDoc } = window;
+        for (const r of importable) {
+            try {
+                const studentId = generateId();
+                const student = {
+                    studentId,
+                    firstName: r.firstname || '',
+                    lastName: r.lastname || '',
+                    dob: r.dob || '',
+                    guardian: r.guardian || '',
+                    phone: r.phone || '',
+                    email: r.email || '',
+                    classId: currentUserData?.classId || '',
+                    notes: r.notes || '',
+                    fatherName: r.fathername || '',
+                    fatherPhone: r.fatherphone || '',
+                    motherName: r.mothername || '',
+                    motherPhone: r.motherphone || '',
+                    emergencyName: '',
+                    emergencyPhone: '',
+                    behaviorNote: '',
+                    behaviorVisibility: true,
+                };
+                await setDoc(doc(window.db, 'students', String(student.studentId)), student, { merge: true });
+                await upsertEnrollmentForStudent(student, currentUserData?.uid || 'faculty');
+                successCount++;
+            } catch (rowErr) {
+                console.error('Row import error:', rowErr);
+                failCount++;
+            }
+        }
+        createAuditLog('csv_import', { count: successCount });
+        showSuccess(`Imported ${successCount} student(s).${failCount > 0 ? ` ${failCount} failed.` : ''}`);
+        document.getElementById('csv-import-modal').style.display = 'none';
+    } catch (err) {
+        showError('Import failed: ' + err.message);
+    } finally {
+        hideSpinner();
+    }
+}
+
+// ==========================================
+// FEATURE B7 — Attendance Date Filter (Faculty)
+// ==========================================
+function applyAttendanceDateFilter() {
+    const from = document.getElementById('att-filter-from')?.value || null;
+    const to = document.getElementById('att-filter-to')?.value || null;
+    if (!from && !to) { showError('Please enter at least one date.'); return; }
+    if (from && to && from > to) { showError('From date must be before To date.'); return; }
+    ATTENDANCE_DATE_FILTER = { from, to };
+    const parts = [];
+    if (from) parts.push(`From: ${formatDate(from)}`);
+    if (to) parts.push(`To: ${formatDate(to)}`);
+    const statusEl = document.getElementById('att-filter-status');
+    if (statusEl) statusEl.textContent = 'Active filter — ' + parts.join(', ');
+    showSuccess('Date filter applied. Click Generate to refresh the report.');
+}
+
+function clearAttendanceDateFilter() {
+    ATTENDANCE_DATE_FILTER = { from: null, to: null };
+    const fromEl = document.getElementById('att-filter-from');
+    const toEl = document.getElementById('att-filter-to');
+    if (fromEl) fromEl.value = '';
+    if (toEl) toEl.value = '';
+    const statusEl = document.getElementById('att-filter-status');
+    if (statusEl) statusEl.textContent = '';
+    const container = document.getElementById('overall-report-container');
+    if (container) container.innerHTML = '';
+    showSuccess('Date filter cleared.');
+}
+
+// ==========================================
+// FEATURE C3 — Homework / Assignment Tracker
+// ==========================================
+
+function populateHwClassDropdown() {
+    const sel = document.getElementById('hw-class-select');
+    if (!sel) return;
+    const myClassId = currentUserData?.classId;
+    sel.innerHTML = '';
+    (DATA_MODELS.classes || [])
+        .filter(c => !myClassId || c.id === myClassId)
+        .sort((a, b) => (a.name || a.id).localeCompare(b.name || b.id))
+        .forEach(c => {
+            const opt = document.createElement('option');
+            opt.value = c.id;
+            opt.textContent = c.name || c.id;
+            sel.appendChild(opt);
+        });
+    if (myClassId) sel.value = myClassId;
+}
+
+function openHomeworkForm() {
+    const container = document.getElementById('homework-form-container');
+    if (!container) return;
+    const titleEl = document.getElementById('homework-form-title');
+    if (titleEl) titleEl.textContent = 'New Assignment';
+    document.getElementById('hw-title').value = '';
+    document.getElementById('hw-subject').value = '';
+    document.getElementById('hw-description').value = '';
+    document.getElementById('hw-attachment-note').value = '';
+    document.getElementById('hw-due-date').value = '';
+    document.getElementById('hw-editing-id').value = '';
+    populateHwClassDropdown();
+    container.style.display = 'block';
+    document.getElementById('hw-title').focus();
+}
+
+function editHomework(hwId) {
+    const hw = (DATA_MODELS.homework || []).find(h => h.id === hwId);
+    if (!hw) return;
+    const container = document.getElementById('homework-form-container');
+    if (!container) return;
+    const titleEl = document.getElementById('homework-form-title');
+    if (titleEl) titleEl.textContent = 'Edit Assignment';
+    document.getElementById('hw-title').value = hw.title || '';
+    document.getElementById('hw-subject').value = hw.subject || '';
+    document.getElementById('hw-description').value = hw.description || '';
+    document.getElementById('hw-attachment-note').value = hw.attachmentNote || '';
+    document.getElementById('hw-due-date').value = hw.dueDate || '';
+    document.getElementById('hw-editing-id').value = hw.id;
+    populateHwClassDropdown();
+    const clsSel = document.getElementById('hw-class-select');
+    if (clsSel && hw.classId) clsSel.value = hw.classId;
+    container.style.display = 'block';
+}
+
+async function saveHomework() {
+    const title = document.getElementById('hw-title')?.value?.trim();
+    if (!title) return showError('Title required.');
+    const classId = document.getElementById('hw-class-select')?.value || currentUserData?.classId;
+    if (!classId) return showError('Class is required.');
+    const editingId = document.getElementById('hw-editing-id')?.value?.trim();
+    const id = editingId || crypto.randomUUID();
+    const activeYear = getActiveAcademicYearId();
+    const payload = {
+        id, title,
+        subject: document.getElementById('hw-subject')?.value?.trim() || '',
+        description: document.getElementById('hw-description')?.value?.trim() || '',
+        attachmentNote: document.getElementById('hw-attachment-note')?.value?.trim() || '',
+        dueDate: document.getElementById('hw-due-date')?.value || '',
+        classId, academicYearId: activeYear,
+    };
+    if (!editingId) payload.createdAt = new Date().toISOString();
+    showSpinner('Saving...');
+    try {
+        await window.setDoc(window.doc(window.db, 'homework', id), payload, { merge: true });
+        createAuditLog(editingId ? 'homework_updated' : 'homework_created', { id, title });
+        hideSpinner();
+        document.getElementById('homework-form-container').style.display = 'none';
+        document.getElementById('hw-editing-id').value = '';
+        showSuccess('Assignment saved.');
+    } catch (err) {
+        hideSpinner();
+        showError('Save failed: ' + err.message);
+    }
+}
+
+async function deleteHomework(hwId) {
+    const hw = (DATA_MODELS.homework || []).find(h => h.id === hwId);
+    if (!hw) return;
+    const confirmed = await showConfirm('Delete Assignment', 'Delete "' + hw.title + '"? This cannot be undone.', 'Delete');
+    if (!confirmed.isConfirmed) return;
+    showSpinner('Deleting...');
+    try {
+        await window.deleteDoc(window.doc(window.db, 'homework', hwId));
+        createAuditLog('homework_deleted', { id: hwId });
+        hideSpinner();
+        showSuccess('Assignment deleted.');
+    } catch (err) {
+        hideSpinner();
+        showError('Delete failed: ' + err.message);
+    }
+}
+
+function renderHomeworkTable() {
+    const tbody = document.getElementById('homework-tbody');
+    if (!tbody) return;
+    const myClassId = currentUserData?.classId;
+    const hwList = (DATA_MODELS.homework || [])
+        .filter(h => !myClassId || h.classId === myClassId)
+        .slice()
+        .sort((a, b) => (b.dueDate || b.createdAt || '').localeCompare(a.dueDate || a.createdAt || ''));
+    if (!hwList.length) {
+        tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:20px;color:var(--text-muted);">No assignments yet. Click &ldquo;New Assignment&rdquo; to add one.</td></tr>';
+        return;
+    }
+    const subs = DATA_MODELS.homeworkSubmissions || [];
+    const classes = DATA_MODELS.classes || [];
+    const today = new Date().toISOString().split('T')[0];
+    tbody.innerHTML = hwList.map(hw => {
+        const cls = classes.find(c => c.id === hw.classId);
+        const clsName = cls ? (cls.name || cls.id) : (hw.classId || '—');
+        const submittedCount = subs.filter(s => s.homeworkId === hw.id && s.status !== 'pending').length;
+        const roster = getCurrentAcademicYearRoster(DATA_MODELS.students || [], DATA_MODELS.enrollments || []).filter(s => s.classId === hw.classId);
+        const totalStudents = roster.length;
+        const isOverdue = hw.dueDate && hw.dueDate < today;
+        return '<tr>'
+            + '<td><strong>' + escapeHtml(hw.title) + '</strong>'
+            + (hw.attachmentNote ? '<br><span style="font-size:0.78rem;color:var(--text-muted);"><i class="fas fa-paperclip"></i> ' + escapeHtml(hw.attachmentNote) + '</span>' : '')
+            + '</td>'
+            + '<td>' + escapeHtml(hw.subject || '—') + '</td>'
+            + '<td>' + escapeHtml(clsName) + '</td>'
+            + '<td style="color:' + (isOverdue ? 'var(--danger)' : 'inherit') + '">' + (hw.dueDate ? formatDate(hw.dueDate) : '—') + '</td>'
+            + '<td><span class="' + (submittedCount >= totalStudents && totalStudents > 0 ? 'hw-submitted' : 'hw-pending') + '">' + submittedCount + '/' + totalStudents + '</span></td>'
+            + '<td>'
+            + '<button class="btn btn-sm btn-primary hw-submissions-btn" data-hw-id="' + hw.id + '" title="View Submissions"><i class="fas fa-list-check"></i></button> '
+            + '<button class="btn btn-sm btn-secondary hw-edit-btn" data-hw-id="' + hw.id + '" title="Edit"><i class="fas fa-edit"></i></button> '
+            + '<button class="btn btn-sm btn-danger hw-delete-btn" data-hw-id="' + hw.id + '" title="Delete"><i class="fas fa-trash"></i></button>'
+            + '</td></tr>';
+    }).join('');
+}
+
+function viewHomeworkSubmissions(hwId) {
+    const hw = (DATA_MODELS.homework || []).find(h => h.id === hwId);
+    if (!hw) return;
+    const cls = (DATA_MODELS.classes || []).find(c => c.id === hw.classId);
+    const clsName = cls ? (cls.name || cls.id) : (hw.classId || '');
+    const infoEl = document.getElementById('hw-submissions-info');
+    if (infoEl) infoEl.textContent = hw.title + ' — ' + clsName + ' — Due: ' + (hw.dueDate ? formatDate(hw.dueDate) : '—');
+
+    const students = getCurrentAcademicYearRoster(DATA_MODELS.students || [], DATA_MODELS.enrollments || [])
+        .filter(s => s.classId === hw.classId)
+        .sort((a, b) => (a.firstName + ' ' + a.lastName).localeCompare(b.firstName + ' ' + b.lastName));
+
+    const subs = DATA_MODELS.homeworkSubmissions || [];
+    const tbody = document.getElementById('hw-submissions-tbody');
+    if (!tbody) return;
+    tbody.innerHTML = students.map(s => {
+        const sub = subs.find(sb => sb.homeworkId === hwId && sb.studentId === s.studentId);
+        const status = sub ? (sub.status || 'pending') : 'pending';
+        const badge = status === 'submitted'
+            ? '<span class="hw-submitted">Submitted</span>'
+            : status === 'late'
+                ? '<span class="hw-pending" style="background:#fee2e2;color:#991b1b;">Late</span>'
+                : '<span class="hw-pending">Pending</span>';
+        return '<tr>'
+            + '<td>' + escapeHtml(s.firstName + ' ' + s.lastName) + '</td>'
+            + '<td>' + badge + '</td>'
+            + '<td><select class="hw-status-select" data-student-id="' + s.studentId + '" data-hw-id="' + hwId + '" style="padding:4px 8px;border-radius:var(--radius-sm);border:1px solid var(--border);font-size:0.82rem;">'
+            + '<option value="pending"' + (status === 'pending' ? ' selected' : '') + '>Pending</option>'
+            + '<option value="submitted"' + (status === 'submitted' ? ' selected' : '') + '>Submitted</option>'
+            + '<option value="late"' + (status === 'late' ? ' selected' : '') + '>Late</option>'
+            + '</select></td></tr>';
+    }).join('') || '<tr><td colspan="3" style="text-align:center;color:var(--text-muted);">No students in class.</td></tr>';
+
+    tbody.querySelectorAll('.hw-status-select').forEach(function(sel) {
+        sel.addEventListener('change', async function () {
+            const newStatus = this.value;
+            const studentId = this.dataset.studentId;
+            const hwIdSel = this.dataset.hwId;
+            const hwDoc = (DATA_MODELS.homework || []).find(h => h.id === hwIdSel);
+            const activeYear = getActiveAcademicYearId();
+            const existing = (DATA_MODELS.homeworkSubmissions || []).find(s => s.homeworkId === hwIdSel && s.studentId === studentId);
+            const subId = existing?.id || crypto.randomUUID();
+            try {
+                const subPayload = {
+                    id: subId, homeworkId: hwIdSel, studentId,
+                    classId: hwDoc ? (hwDoc.classId || '') : '', academicYearId: activeYear,
+                    status: newStatus,
+                };
+                if (newStatus === 'submitted') subPayload.submittedAt = new Date().toISOString();
+                await window.setDoc(window.doc(window.db, 'homeworkSubmissions', subId), subPayload, { merge: true });
+            } catch (err) {
+                showError('Failed to update: ' + err.message);
+            }
+        });
+    });
+
+    document.getElementById('hw-submissions-modal').style.display = 'flex';
 }

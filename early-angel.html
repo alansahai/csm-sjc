@@ -4,40 +4,20 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Early Angel Portal</title>
+    <title>Early Angel Portal — St. Jude's Catechism</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <link rel="stylesheet" href="css/style.css?v=20260419b">
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⛪</text></svg>">
+    <link rel="stylesheet" href="css/style.css">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.9.3/html2pdf.bundle.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
 
-    <script src="/firebase.config.js"></script>
-    <script type="module">
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/12.5.0/firebase-app.js";
-        import {
-            getFirestore, collection, getDocs, query, where,
-            setDoc, doc, getDoc, deleteDoc, onSnapshot
-        } from "https://www.gstatic.com/firebasejs/12.5.0/firebase-firestore.js";
-        import { getAuth, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/12.5.0/firebase-auth.js";
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+    <script src="/supabase.config.js"></script>
+    <script src="js/supabase.js"></script>
 
-        const firebaseConfig = window.__FIREBASE_CONFIG__;
-        if (!firebaseConfig) {
-            console.error("Firebase config is missing!");
-            Swal.fire('Configuration Error', 'Firebase config is missing. The app cannot start.', 'error');
-        } else {
-            const app = initializeApp(firebaseConfig);
-            const db = getFirestore(app);
-            const auth = getAuth(app);
-
-            Object.assign(window, {
-                db, auth, collection, getDocs, query, where, setDoc,
-                doc, getDoc, deleteDoc, onSnapshot, onAuthStateChanged, signOut
-            });
-        }
-    </script>
-
-    <script src="js/common.js?v=20260419b" defer></script>
-    <script src="js/early-angel.js?v=20260419b" defer></script>
+    <script src="js/common.js" defer></script>
+    <script src="js/early-angel.js" defer></script>
 </head>
 
 <body>
@@ -56,165 +36,195 @@
         </div>
     </div>
 
-    <div id="app-content" class="is-hidden">
-        <header>
-            <div class="container">
-                <div class="header-content">
-                    <div class="logo">
-                        <i class="fas fa-star"></i>
-                        <h1>Early Angel Portal</h1>
-                    </div>
+    <div id="app-content" class="is-hidden portal-layout">
 
-                    <div class="header-actions">
-                        <button id="ea-back-btn" class="btn btn-outline" type="button">
-                            <i class="fas fa-arrow-left"></i> Back To Main Portal
-                        </button>
-                        <div class="theme-switch-wrapper">
-                            <label class="theme-switch" for="theme-toggle">
-                                <input type="checkbox" id="theme-toggle" />
-                                <div class="slider round">
-                                    <i class="fas fa-sun sun-icon"></i>
-                                    <i class="fas fa-moon moon-icon"></i>
-                                </div>
-                            </label>
+        <!-- Portal Header -->
+        <header class="portal-header">
+            <div class="portal-header-inner container">
+                <div class="portal-header-start">
+                    <button id="ea-back-btn" class="btn btn-sm btn-secondary" type="button">
+                        <i class="fas fa-arrow-left"></i> Back
+                    </button>
+                    <div class="portal-brand">
+                        <div class="portal-brand-icon" style="background: linear-gradient(135deg,#f59e0b,#d97706);">
+                            <i class="fas fa-star"></i>
                         </div>
-                        <div class="profile-dropdown">
-                            <button id="profile-btn" class="profile-btn">
-                                <i class="fas fa-user-circle"></i>
-                            </button>
-                            <div id="profile-menu" class="profile-menu is-hidden">
-                                <div id="user-info-email" class="profile-info-item">...</div>
-                                <div id="user-info-role" class="profile-info-item">...</div>
-                                <hr>
-                                <button id="logout-btn" class="profile-menu-item">
-                                    <i class="fas fa-sign-out-alt"></i> Logout
-                                </button>
+                        <div class="portal-brand-text">
+                            <span class="portal-brand-title">Early Angel Portal</span>
+                            <span class="portal-brand-sub">St. Jude's Catechism</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="portal-header-end">
+                    <div class="theme-switch-wrapper">
+                        <label class="theme-switch" for="theme-toggle">
+                            <input type="checkbox" id="theme-toggle" />
+                            <div class="slider round">
+                                <i class="fas fa-sun sun-icon"></i>
+                                <i class="fas fa-moon moon-icon"></i>
                             </div>
+                        </label>
+                    </div>
+                    <div class="profile-dropdown">
+                        <button id="profile-btn" class="profile-btn" type="button">
+                            <i class="fas fa-user"></i>
+                        </button>
+                        <div id="profile-menu" class="profile-menu is-hidden">
+                            <div id="user-info-email" class="profile-info-item">...</div>
+                            <div id="user-info-role" class="profile-info-item">...</div>
+                            <hr>
+                            <button id="logout-btn" class="profile-menu-item">
+                                <i class="fas fa-sign-out-alt"></i> Logout
+                            </button>
                         </div>
                     </div>
                 </div>
             </div>
         </header>
 
-        <div class="container">
-            <div class="card">
-                <div class="card-header">
-                    <h2 class="card-title">Daily Entry</h2>
+        <!-- Portal Content -->
+        <div class="portal-content">
+            <div class="container">
+
+                <!-- Hero Banner -->
+                <div class="portal-hero-banner">
+                    <div class="portal-hero-icon" style="background:rgba(245,158,11,0.2);">
+                        <i class="fas fa-star" style="color:#fbbf24;"></i>
+                    </div>
+                    <div>
+                        <div class="portal-hero-title">Early Angel Program</div>
+                        <div class="portal-hero-sub">Track and reward students who arrive early — St. Jude's Catechism</div>
+                    </div>
                 </div>
 
-                <form id="ea-entry-form">
-                    <div class="form-group ea-search-wrap">
-                        <label for="ea-student-search-input">Student Name Search *</label>
-                        <input type="text" id="ea-student-search-input" placeholder="Type student name or ID..."
-                            autocomplete="off" required>
-                        <input type="hidden" id="ea-selected-student-id">
-                        <div id="ea-student-suggestions" class="ea-suggestions is-hidden"></div>
-                        <small id="ea-student-mode-hint">Global search: type to fetch student name and class
-                            suggestions.</small>
+                <!-- Daily Entry -->
+                <div class="card">
+                    <div class="card-header">
+                        <h2 class="card-title"><i class="fas fa-plus-circle" style="color:var(--primary);margin-right:8px;"></i>Daily Entry</h2>
+                    </div>
+
+                    <form id="ea-entry-form">
+                        <div class="form-group ea-search-wrap">
+                            <label for="ea-student-search-input">Student Name Search <span style="color:var(--danger)">*</span></label>
+                            <input type="text" id="ea-student-search-input" placeholder="Type student name or ID..."
+                                autocomplete="off" required>
+                            <input type="hidden" id="ea-selected-student-id">
+                            <div id="ea-student-suggestions" class="ea-suggestions is-hidden"></div>
+                            <small id="ea-student-mode-hint" style="color:var(--text-muted);display:block;margin-top:4px;">
+                                Global search — type to find any student across all classes.
+                            </small>
+                            <button type="button" id="ea-add-student-btn" class="btn btn-secondary btn-sm" style="margin-top:8px;">
+                                <i class="fas fa-user-plus"></i> Add New Student
+                            </button>
+                        </div>
+
+                        <div class="grid">
+                            <div class="form-group">
+                                <label for="ea-class-input">Class <span style="color:var(--danger)">*</span></label>
+                                <input type="text" id="ea-class-input" list="ea-class-list" placeholder="e.g. class-6" required>
+                                <datalist id="ea-class-list"></datalist>
+                            </div>
+                            <div class="form-group">
+                                <label for="ea-date-input">Date</label>
+                                <input type="date" id="ea-date-input" required>
+                            </div>
+                        </div>
+
+                        <div class="btn-group">
+                            <button class="btn btn-primary" type="submit">
+                                <i class="fas fa-save"></i> Save Early Angel Entry
+                            </button>
+                        </div>
+                    </form>
+                </div>
+
+                <!-- Leaderboard & Entries -->
+                <div class="card">
+                    <div class="card-header">
+                        <h2 class="card-title"><i class="fas fa-trophy" style="color:var(--warning);margin-right:8px;"></i>Leaderboard &amp; Recent Entries</h2>
+                    </div>
+
+                    <div class="form-group">
+                        <input type="text" id="ea-table-search" placeholder="Search by student, class, or date...">
+                    </div>
+
+                    <div class="card-nested">
+                        <div class="card-header">
+                            <h3 class="card-title">Leaderboard</h3>
+                        </div>
+                        <div class="table-wrapper">
+                            <table id="ea-leaderboard-table" class="data-table simple">
+                                <thead>
+                                    <tr>
+                                        <th>Rank</th>
+                                        <th>Class</th>
+                                        <th>Student</th>
+                                        <th>Count</th>
+                                    </tr>
+                                </thead>
+                                <tbody></tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <div class="card-nested" style="margin-top:16px;">
+                        <div class="card-header">
+                            <h3 class="card-title">Recent Entries</h3>
+                        </div>
+                        <div class="table-wrapper">
+                            <table id="ea-entries-table" class="data-table simple">
+                                <thead>
+                                    <tr>
+                                        <th>Date</th>
+                                        <th>Time</th>
+                                        <th>Class</th>
+                                        <th>Student</th>
+                                        <th>Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Report Generation Engine -->
+                <div class="card ea-report-engine-card">
+                    <div class="card-header">
+                        <h2 class="card-title"><i class="fas fa-file-alt" style="color:var(--warning);margin-right:8px;"></i>Report Generation Engine</h2>
                     </div>
 
                     <div class="grid">
                         <div class="form-group">
-                            <label for="ea-class-input">Class *</label>
-                            <input type="text" id="ea-class-input" list="ea-class-list" placeholder="class-6" required>
-                            <datalist id="ea-class-list"></datalist>
+                            <label for="ea-instant-report-date-select">Instant Report Date <span style="color:var(--danger)">*</span></label>
+                            <select id="ea-instant-report-date-select">
+                                <option value="">Loading available dates...</option>
+                            </select>
+                            <small id="ea-report-date-note" style="display:block;margin-top:4px;color:var(--text-muted);">
+                                Only dates with entries are listed.
+                            </small>
                         </div>
+
                         <div class="form-group">
-                            <label for="ea-date-input">Date</label>
-                            <input type="date" id="ea-date-input" required>
+                            <label>Available Entry Dates</label>
+                            <div id="ea-report-date-meta" class="ea-pill-row"></div>
                         </div>
                     </div>
 
-                    <div class="btn-group" style="margin-bottom: 20px;">
-                        <button class="btn btn-primary" type="submit">
-                            <i class="fas fa-plus"></i> Save Early Angel Entry
+                    <div class="btn-group">
+                        <button class="btn btn-primary" type="button" id="ea-generate-instant-report-btn">
+                            <i class="fas fa-file-download"></i> Download Instant Report
+                        </button>
+                        <button class="btn btn-success" type="button" id="ea-generate-entire-report-btn">
+                            <i class="fas fa-file-archive"></i> Download Entire Report
                         </button>
                     </div>
-                </form>
+                </div>
+
+                <div id="ea-report-render-area" class="ea-report-render-host"></div>
+
             </div>
-
-            <div class="card">
-                <div class="card-header">
-                    <h2 class="card-title">Daily Count And Recent Entries</h2>
-                </div>
-
-                <div class="form-group">
-                    <label for="ea-table-search">Search Leaderboard/Entries</label>
-                    <input type="text" id="ea-table-search" placeholder="Search by student, class, or date">
-                </div>
-
-                <div class="card card-nested">
-                    <div class="card-header">
-                        <h3 class="card-title">Leaderboard</h3>
-                    </div>
-                    <div class="table-wrapper">
-                        <table id="ea-leaderboard-table" class="data-table simple">
-                            <thead>
-                                <tr>
-                                    <th>Rank</th>
-                                    <th>Class</th>
-                                    <th>Student</th>
-                                    <th>Count</th>
-                                </tr>
-                            </thead>
-                            <tbody></tbody>
-                        </table>
-                    </div>
-                </div>
-
-                <div class="card card-nested">
-                    <div class="card-header">
-                        <h3 class="card-title">Recent Entries</h3>
-                    </div>
-                    <div class="table-wrapper">
-                        <table id="ea-entries-table" class="data-table simple">
-                            <thead>
-                                <tr>
-                                    <th>Date</th>
-                                    <th>Time</th>
-                                    <th>Class</th>
-                                    <th>Student</th>
-                                    <th>Actions</th>
-                                </tr>
-                            </thead>
-                            <tbody></tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
-
-            <div class="card ea-report-engine-card">
-                <div class="card-header">
-                    <h2 class="card-title">Report Generation Engine</h2>
-                </div>
-
-                <div class="grid">
-                    <div class="form-group">
-                        <label for="ea-instant-report-date-select">Instant Report Date *</label>
-                        <select id="ea-instant-report-date-select">
-                            <option value="">Loading available dates...</option>
-                        </select>
-                        <small id="ea-report-date-note">Default is current date. Only dates with entries are
-                            listed.</small>
-                    </div>
-
-                    <div class="form-group">
-                        <label>Available Entry Dates</label>
-                        <div id="ea-report-date-meta" class="ea-pill-row"></div>
-                    </div>
-                </div>
-
-                <div class="btn-group">
-                    <button class="btn btn-primary" type="button" id="ea-generate-instant-report-btn">
-                        <i class="fas fa-file-download"></i> Download Instant Report
-                    </button>
-                    <button class="btn btn-success" type="button" id="ea-generate-entire-report-btn">
-                        <i class="fas fa-file-archive"></i> Download Entire Report
-                    </button>
-                </div>
-            </div>
-
-            <div id="ea-report-render-area" class="ea-report-render-host"></div>
         </div>
     </div>
 </body>

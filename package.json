@@ -3,5 +3,8 @@
     "version": "1.0.0",
     "scripts": {
         "build": "node scripts/write-config.js"
+    },
+    "dependencies": {
+        "firebase-admin": "^14.1.0"
     }
 }

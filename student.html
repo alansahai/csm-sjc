@@ -8,22 +8,13 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.9.3/html2pdf.bundle.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⛪</text></svg>">
     <link rel="stylesheet" href="css/style.css">
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
 
-    <script src="/firebase.config.js"></script>
-    <script type="module">
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/12.5.0/firebase-app.js";
-        import { getFirestore, collection, getDocs, query, where, doc, getDoc, setDoc, orderBy } from "https://www.gstatic.com/firebasejs/12.5.0/firebase-firestore.js";
-
-        const firebaseConfig = window.__FIREBASE_CONFIG__;
-        if (firebaseConfig) {
-            const app = initializeApp(firebaseConfig);
-            window.db = getFirestore(app);
-            // Expose needed functions
-            Object.assign(window, { collection, getDocs, query, where, doc, getDoc, setDoc, orderBy });
-        }
-    </script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+    <script src="/supabase.config.js"></script>
+    <script src="js/supabase.js"></script>
 
     <script src="js/common.js" defer></script>
     <script src="js/student.js" defer></script>
@@ -35,7 +26,7 @@
     </div>
 
     <div id="app-content" class="is-hidden">
-        <header>
+        <header class="simple-header">
             <div class="container">
                 <div class="header-content">
                     <div class="logo">
@@ -48,6 +39,7 @@
                             <li><a href="#" data-tab="attendance">Attendance</a></li>
                             <li><a href="#" data-tab="results">Results</a></li>
                             <li><a href="#" data-tab="early-angel">Early Angel</a></li>
+                            <li><a href="#" data-tab="homework"><i class="fas fa-book-open"></i> Homework</a></li>
                         </ul>
                     </nav>
                     <div class="header-actions">
@@ -117,6 +109,18 @@
                                 <label>Mobile Number</label>
                                 <div id="st-phone">...</div>
                             </div>
+                            <div class="form-group">
+                                <label>Anbiyam Name</label>
+                                <div id="st-anbiyam">...</div>
+                            </div>
+                            <div class="form-group">
+                                <label>First Holy Communion</label>
+                                <div id="st-first-communion">...</div>
+                            </div>
+                            <div class="form-group">
+                                <label>Confirmation</label>
+                                <div id="st-confirmation">...</div>
+                            </div>
                         </div>
                         <hr class="section-divider">
                         <div class="card-header">
@@ -142,6 +146,13 @@
                         </div>
                         <div class="card card-nested">
                             <p id="st-behavior-note">No behavior note available.</p>
+                        </div>
+                        <hr class="section-divider">
+                        <div class="card-header">
+                            <h3><i class="fas fa-bullhorn"></i> Announcements</h3>
+                        </div>
+                        <div id="student-announcements-list">
+                            <p style="color:var(--text-color-light);">Loading announcements...</p>
                         </div>
                     </div>
                 </div>
@@ -295,6 +306,17 @@
                     </div>
                 </div>
 
+                <div id="homework" class="tab-content">
+                    <div class="card">
+                        <div class="card-header">
+                            <h2 class="card-title"><i class="fas fa-book-open" style="color:var(--primary);margin-right:8px;"></i>My Homework</h2>
+                        </div>
+                        <div id="student-homework-list">
+                            <p style="color:var(--text-color-light);">Loading homework...</p>
+                        </div>
+                    </div>
+                </div>
+
             </div>
         </div>
     </div>
@@ -309,12 +331,12 @@
                 <form id="student-profile-form">
                     <div class="grid">
                         <div class="form-group">
-                            <label for="profile-first-name">First Name *</label>
+                            <label for="profile-first-name">Name *</label>
                             <input type="text" id="profile-first-name" required>
                         </div>
                         <div class="form-group">
-                            <label for="profile-last-name">Last Name *</label>
-                            <input type="text" id="profile-last-name" required>
+                            <label for="profile-last-name">Last Name</label>
+                            <input type="text" id="profile-last-name">
                         </div>
                     </div>
                     <div class="grid">
@@ -328,8 +350,8 @@
                         </div>
                     </div>
                     <div class="form-group">
-                        <label for="profile-guardian">Guardian Name *</label>
-                        <input type="text" id="profile-guardian" required>
+                        <label for="profile-guardian">Guardian Name</label>
+                        <input type="text" id="profile-guardian">
                     </div>
                     <div class="grid">
                         <div class="form-group">

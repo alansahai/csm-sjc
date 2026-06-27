@@ -46,6 +46,8 @@ document.addEventListener('DOMContentLoaded', async function () {
         });
         await loadStudentEnrollmentInfo();
         await fetchStudentData();
+        await loadStudentAnnouncements();
+        await loadStudentHomework();
         renderProfile();
         renderAttendance();
         renderResults();
@@ -69,25 +71,24 @@ async function fetchStudentData() {
         throw new Error('Student ID not available for this account.');
     }
 
-    // 1. Fetch Attendance (Where studentId == ID)
+    // 1. Fetch Attendance (single-field query to avoid composite index requirement; year filtered in memory)
     const attQuery = query(collection(db, 'attendance'), where('studentId', '==', studentId));
     const attSnap = await getDocs(attQuery);
 
     // We also need session dates. Attendance docs usually link to a sessionId.
-    // Optimization: Fetch all sessions first to map dates
-    const sessionSnap = await getDocs(collection(db, 'sessions'));
+    // Optimization: Fetch all sessions for this year to map dates
+    const sessionSnap = portalAcademicYearId
+        ? await getDocs(query(collection(db, 'sessions'), where('academicYearId', '==', portalAcademicYearId)))
+        : await getDocs(collection(db, 'sessions'));
     const sessionsMap = {};
     sessionSnap.forEach(doc => {
-        const sessionData = doc.data();
-        if (!portalAcademicYearId || String(sessionData?.academicYearId || '').trim() === portalAcademicYearId) {
-            sessionsMap[doc.id] = sessionData;
-        }
+        sessionsMap[doc.id] = doc.data();
     });
 
     STUDENT_DATA.attendance = [];
     attSnap.forEach(doc => {
         const data = doc.data();
-        if (portalAcademicYearId && String(data?.academicYearId || '').trim() !== portalAcademicYearId) return;
+        if (portalAcademicYearId && String(data?.academicYearId || '') !== portalAcademicYearId) return;
         // Merge with session date
         const session = sessionsMap[data.sessionId];
         if (session) {
@@ -99,25 +100,29 @@ async function fetchStudentData() {
         }
     });
 
-    // 2. Fetch Scores (Where studentId == ID)
+    // 2. Fetch Scores (single-field query to avoid composite index requirement; year filtered in memory)
     const scoreQuery = query(collection(db, 'scores'), where('studentId', '==', studentId));
     const scoreSnap = await getDocs(scoreQuery);
 
-    // Need Assessment Details (Name, Total Marks)
-    // Fetch all assessments (filtered by class if possible, but fetch all is safer for matching)
-    const assessSnap = await getDocs(collection(db, 'assessments'));
+    // Fetch assessments scoped by year and class when available
+    const studentClassId = String(currentStudent?.classId || '').trim();
+    let assessSnap;
+    if (portalAcademicYearId && studentClassId) {
+        assessSnap = await getDocs(query(collection(db, 'assessments'), where('academicYearId', '==', portalAcademicYearId), where('classId', '==', studentClassId)));
+    } else if (portalAcademicYearId) {
+        assessSnap = await getDocs(query(collection(db, 'assessments'), where('academicYearId', '==', portalAcademicYearId)));
+    } else {
+        assessSnap = await getDocs(collection(db, 'assessments'));
+    }
     const assessMap = {};
     assessSnap.forEach(doc => {
-        const assessmentData = doc.data();
-        if (!portalAcademicYearId || String(assessmentData?.academicYearId || '').trim() === portalAcademicYearId) {
-            assessMap[doc.id] = assessmentData;
-        }
+        assessMap[doc.id] = doc.data();
     });
 
     STUDENT_DATA.scores = [];
     scoreSnap.forEach(scoreDoc => {
         const data = scoreDoc.data();
-        if (portalAcademicYearId && String(data?.academicYearId || '').trim() !== portalAcademicYearId) return;
+        if (portalAcademicYearId && String(data?.academicYearId || '') !== portalAcademicYearId) return;
         const assessment = assessMap[data.assessmentId];
         if (assessment) {
             STUDENT_DATA.scores.push({
@@ -136,7 +141,7 @@ async function fetchStudentData() {
         STUDENT_DATA.earlyAngelEntries = [];
         earlyAngelSnap.forEach(entryDoc => {
             const data = entryDoc.data() || {};
-            if (portalAcademicYearId && String(data?.academicYearId || '').trim() !== portalAcademicYearId) return;
+            if (portalAcademicYearId && String(data?.academicYearId || '') !== portalAcademicYearId) return;
             STUDENT_DATA.earlyAngelEntries.push({
                 id: entryDoc.id,
                 ...data
@@ -279,6 +284,13 @@ function renderProfile() {
     document.getElementById('st-guardian').textContent = s.guardian || 'N/A';
     document.getElementById('st-phone').textContent = s.phone || 'N/A';
 
+    const anbiyamEl = document.getElementById('st-anbiyam');
+    if (anbiyamEl) anbiyamEl.textContent = s.anbiyamName || 'N/A';
+    const fhcEl = document.getElementById('st-first-communion');
+    if (fhcEl) fhcEl.textContent = s.receivedFirstCommunion === true ? 'Received ✓' : 'Not yet';
+    const confEl = document.getElementById('st-confirmation');
+    if (confEl) confEl.textContent = s.receivedConfirmation === true ? 'Received ✓' : 'Not yet';
+
     const behaviorEl = document.getElementById('st-behavior-note');
     if (behaviorEl) {
         const behaviorText = String(s.behaviorNote || s.notes || '').trim();
@@ -416,7 +428,7 @@ function renderResults() {
 
     scoresForTable.forEach(score => {
         const row = document.createElement('tr');
-        const percentage = score.marks !== null ? Math.round((score.marks / score.totalMarks) * 100) : 0;
+        const percentage = (score.marks !== null && score.totalMarks > 0) ? Math.round((score.marks / score.totalMarks) * 100) : 0;
         const color = percentage >= 40 ? 'green' : 'red';
 
         row.innerHTML = `
@@ -504,8 +516,13 @@ function setupNav() {
 }
 
 function studentLogout() {
+    createAuditLog('student_logout', { studentId: currentStudent?.studentId });
     sessionStorage.removeItem('currentStudent');
-    window.location.href = 'index.html';
+    if (window.auth && window.signOut) {
+        window.signOut(window.auth).finally(() => { window.location.href = 'index.html'; });
+    } else {
+        window.location.href = 'index.html';
+    }
 }
 
 function formatDate(dateString) {
@@ -551,14 +568,14 @@ function closeProfileEditor() {
 async function saveProfileEdits() {
     const firstName = document.getElementById('profile-first-name').value.trim();
     const lastName = document.getElementById('profile-last-name').value.trim();
-    const dob = document.getElementById('profile-dob').value || '';
+    const dob = document.getElementById('profile-dob').value || null; // '' is invalid for DATE
     const phone = document.getElementById('profile-phone').value.trim();
     const guardian = document.getElementById('profile-guardian').value.trim();
     const email = document.getElementById('profile-email').value.trim();
     const notes = document.getElementById('profile-notes').value.trim();
 
-    if (!firstName || !lastName || !guardian) {
-        return showError('First name, last name, and guardian name are required.');
+    if (!firstName) {
+        return showError('Name is required.');
     }
 
     const studentId = String(STUDENT_DATA.details?.studentId || '').trim();
@@ -580,11 +597,13 @@ async function saveProfileEdits() {
             updatedAt: new Date().toISOString(),
         };
 
+        const { setDoc, doc } = window;
         await setDoc(doc(window.db, 'students', studentId), updatedProfile, { merge: true });
 
         STUDENT_DATA.details = updatedProfile;
         sessionStorage.setItem('currentStudent', JSON.stringify(updatedProfile));
 
+        createAuditLog('student_profile_updated', { studentId });
         renderProfile();
         closeProfileEditor();
         showSuccess('Profile Saved', 'Your profile was updated successfully.');
@@ -594,4 +613,168 @@ async function saveProfileEdits() {
     } finally {
         hideSpinner();
     }
+}
+
+// -----------------
+// 📢 B8: ANNOUNCEMENTS (STUDENT READ-ONLY)
+// -----------------
+async function loadStudentAnnouncements() {
+    const container = document.getElementById('student-announcements-list');
+    if (!container) return;
+
+    try {
+        const { getDocs, query, collection, where } = window;
+        if (!getDocs || !query || !collection || !where || !window.db) {
+            container.innerHTML = '<p style="color:var(--text-color-light);">Announcements unavailable.</p>';
+            return;
+        }
+
+        const portalAcademicYearId = getStudentPortalAcademicYearId();
+        const snap = await getDocs(
+            query(collection(window.db, 'announcements'),
+                where('audience', 'in', ['all', 'students'])
+            )
+        );
+
+        const today = new Date().toISOString().slice(0, 10);
+        const announcements = [];
+        snap.forEach(d => {
+            const data = d.data();
+            if (data.expiresAt && data.expiresAt < today) return;
+            if (data.academicYearId && portalAcademicYearId && String(data.academicYearId) !== String(portalAcademicYearId)) return;
+            announcements.push({ id: d.id, ...data });
+        });
+
+        renderStudentAnnouncements(announcements);
+    } catch (err) {
+        console.warn('Failed to load announcements:', err);
+        const container = document.getElementById('student-announcements-list');
+        if (container) container.innerHTML = '<p style="color:var(--text-color-light);">Could not load announcements.</p>';
+    }
+}
+
+function renderStudentAnnouncements(announcements) {
+    const container = document.getElementById('student-announcements-list');
+    if (!container) return;
+
+    if (!announcements || announcements.length === 0) {
+        container.innerHTML = '<p style="color:var(--text-color-light);">No announcements at this time.</p>';
+        return;
+    }
+
+    const sorted = [...announcements].sort((a, b) => {
+        if (a.pinned && !b.pinned) return -1;
+        if (!a.pinned && b.pinned) return 1;
+        return String(b.createdAt || '').localeCompare(String(a.createdAt || ''));
+    });
+
+    container.innerHTML = sorted.map(ann => {
+        const dateStr = ann.createdAt ? formatDate(ann.createdAt.slice(0, 10)) : '';
+        return `
+        <div class="announcement-card ${ann.pinned ? 'pinned' : ''}">
+            ${ann.pinned ? '<i class="fas fa-thumbtack" style="color:var(--warning);margin-right:6px;"></i>' : ''}
+            <strong>${escapeHtml(ann.title || '')}</strong>
+            <p style="margin:6px 0 4px;">${escapeHtml(ann.body || '')}</p>
+            <small style="color:var(--text-color-light);">${dateStr}</small>
+        </div>`;
+    }).join('');
+}
+
+// -----------------
+// C3: HOMEWORK (STUDENT VIEW)
+// -----------------
+async function loadStudentHomework() {
+    const container = document.getElementById('student-homework-list');
+    if (!container) return;
+
+    try {
+        const { getDocs, query, collection, where } = window;
+        if (!getDocs || !collection || !window.db) {
+            container.innerHTML = '<p style="color:var(--text-color-light);">Homework unavailable.</p>';
+            return;
+        }
+
+        const portalAcademicYearId = getStudentPortalAcademicYearId();
+        const classId = currentStudent?.classId || null;
+
+        let homeworkSnap;
+        if (classId) {
+            homeworkSnap = await getDocs(
+                query(collection(window.db, 'homework'),
+                    where('classId', '==', classId)
+                )
+            );
+        } else {
+            homeworkSnap = await getDocs(collection(window.db, 'homework'));
+        }
+
+        const homework = [];
+        homeworkSnap.forEach(d => {
+            const data = d.data();
+            if (portalAcademicYearId && data.academicYearId && String(data.academicYearId) !== String(portalAcademicYearId)) return;
+            homework.push({ id: d.id, ...data });
+        });
+
+        // Load submission statuses for this student
+        const studentId = String(currentStudent?.studentId || '').trim();
+        const submissionMap = {};
+        if (studentId && homework.length > 0) {
+            const subSnap = await getDocs(
+                query(collection(window.db, 'homeworkSubmissions'),
+                    where('studentId', '==', studentId)
+                )
+            );
+            subSnap.forEach(d => {
+                const data = d.data();
+                submissionMap[data.homeworkId] = data.status || 'submitted';
+            });
+        }
+
+        renderStudentHomework(homework, submissionMap);
+    } catch (err) {
+        console.warn('Failed to load homework:', err);
+        const container = document.getElementById('student-homework-list');
+        if (container) container.innerHTML = '<p style="color:var(--text-color-light);">Could not load homework.</p>';
+    }
+}
+
+function renderStudentHomework(homework, submissionMap) {
+    const container = document.getElementById('student-homework-list');
+    if (!container) return;
+
+    if (!homework || homework.length === 0) {
+        container.innerHTML = '<p style="color:var(--text-color-light);padding:16px 0;">No homework assignments at this time.</p>';
+        return;
+    }
+
+    const today = new Date().toISOString().slice(0, 10);
+    const sorted = [...homework].sort((a, b) => String(b.dueDate || '').localeCompare(String(a.dueDate || '')));
+
+    container.innerHTML = sorted.map(hw => {
+        const isOverdue = hw.dueDate && hw.dueDate < today;
+        const submissionStatus = submissionMap[hw.id];
+        let statusBadge = '';
+        if (submissionStatus) {
+            statusBadge = `<span style="background:#d1fae5;color:#065f46;border-radius:20px;padding:2px 10px;font-size:0.78rem;font-weight:600;">Submitted</span>`;
+        } else if (isOverdue) {
+            statusBadge = `<span style="background:#fee2e2;color:#991b1b;border-radius:20px;padding:2px 10px;font-size:0.78rem;font-weight:600;">Overdue</span>`;
+        } else {
+            statusBadge = `<span style="background:#fef3c7;color:#92400e;border-radius:20px;padding:2px 10px;font-size:0.78rem;font-weight:600;">Pending</span>`;
+        }
+        return `
+        <div class="card card-nested" style="margin-bottom:12px;border-left:4px solid ${isOverdue && !submissionStatus ? 'var(--danger)' : 'var(--primary)'};padding:14px 16px;">
+            <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:6px;">
+                <div>
+                    <strong style="font-size:1rem;">${escapeHtml(hw.title || '')}</strong>
+                    ${hw.subject ? `<span style="color:var(--text-color-light);font-size:0.85rem;margin-left:8px;">${escapeHtml(hw.subject)}</span>` : ''}
+                </div>
+                ${statusBadge}
+            </div>
+            ${hw.description ? `<p style="margin:8px 0 4px;color:var(--text-secondary);font-size:0.9rem;">${escapeHtml(hw.description)}</p>` : ''}
+            ${hw.attachmentNote ? `<p style="font-size:0.83rem;color:var(--text-color-light);"><i class="fas fa-paperclip"></i> ${escapeHtml(hw.attachmentNote)}</p>` : ''}
+            <div style="margin-top:8px;font-size:0.82rem;color:var(--text-color-light);">
+                <i class="fas fa-calendar-alt"></i> Due: <strong>${hw.dueDate ? formatDate(hw.dueDate) : 'No deadline'}</strong>
+            </div>
+        </div>`;
+    }).join('');
 }

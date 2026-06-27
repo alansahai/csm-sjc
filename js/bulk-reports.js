@@ -249,8 +249,17 @@ async function generateAndDownloadBulkClassReports() {
  * Uses TABLES instead of Flexbox to ensure perfect PDF rendering.
  */
 function generateStudentReportDOM(student) {
-    const totalSessions = DATA_MODELS.sessions.filter(s => s.status === 'Available').length;
-    const studentAttendance = DATA_MODELS.attendance.filter(a => a.studentId === student.studentId);
+    const studentYearId = String(student.academicYearId || '').trim();
+    const studentClassId = String(student.classId || '').trim();
+    const totalSessions = DATA_MODELS.sessions.filter(s =>
+        s.status === 'Available' &&
+        (!studentYearId || String(s.academicYearId || '') === studentYearId) &&
+        (!studentClassId || String(s.classId || '') === studentClassId)
+    ).length;
+    const studentAttendance = DATA_MODELS.attendance.filter(a =>
+        a.studentId === student.studentId &&
+        (!studentYearId || String(a.academicYearId || '') === studentYearId)
+    );
     const presentCount = studentAttendance.filter(a => a.status === 'Present' || a.status === 'Late').length;
     const attendancePercentage = totalSessions > 0 ? Math.round((presentCount / totalSessions) * 100) : 0;
 

@@ -107,13 +107,11 @@ function getPortalDocRef() {
 }
 
 function getPortalStudentsCollectionRef() {
-    const id = getPortalDocId();
-    return collection(window.db, 'vbs_portal', id, 'students');
+    return query(collection(window.db, 'vbsStudents'), where('portalId', '==', getPortalDocId()));
 }
 
 function getPortalAttendanceCollectionRef() {
-    const id = getPortalDocId();
-    return collection(window.db, 'vbs_portal', id, 'attendance');
+    return query(collection(window.db, 'vbsAttendance'), where('portalId', '==', getPortalDocId()));
 }
 
 async function checkPortalExists() {
@@ -137,7 +135,6 @@ async function createPortal() {
         vbsYear: VBS_YEAR_FIXED,
         academicYearId: VBS_STATE.activeAcademicYearId || null,
         createdAt: new Date().toISOString(),
-        createdByUid: VBS_STATE.user?.uid || null
     };
 
     try {
@@ -150,6 +147,7 @@ async function createPortal() {
         renderPortalRosterTable();
         renderAttendanceTable();
         refreshTodayReportDateOptions();
+        createAuditLog('vbs_portal_created', { portalId: payload.id, vbsYear: VBS_YEAR_FIXED });
         showSuccess('Portal created', 'VBS turnover portal created for active year.');
     } catch (err) {
         console.error(err);
@@ -219,6 +217,7 @@ async function addPortalStudentFromForm() {
 
     const payload = {
         id: docId,
+        portalId: getPortalDocId(),
         name,
         fullName: name,
         classId,
@@ -228,11 +227,10 @@ async function addPortalStudentFromForm() {
         vbsYear: VBS_YEAR_FIXED,
         academicYearId: VBS_STATE.activeAcademicYearId || null,
         createdAt: new Date().toISOString(),
-        createdByUid: VBS_STATE.user?.uid || null,
     };
 
     try {
-        await setDoc(doc(window.db, 'vbs_portal', getPortalDocId(), 'students', docId), payload, { merge: false });
+        await setDoc(doc(window.db, 'vbsStudents', docId), payload, { merge: false });
         await createAuditLog('vbs_portal_student_added', { docId, classId, studentId });
         VBS_STATE.portalRoster = [payload, ...(VBS_STATE.portalRoster || []).filter(item => String(item.id) !== docId)];
         await Promise.all([renderPortalRosterTable(), renderAttendanceTable(), refreshTodayReportDateOptions()]);
@@ -256,6 +254,7 @@ function renderPortalRosterTable() {
     const term = String(document.getElementById('vbs-portal-search')?.value || '').trim().toLowerCase();
 
     const rows = (VBS_STATE.portalRoster || []).filter(item => {
+        if (!isRecordInScope(item)) return false;
         if (classFilter && String(item.classId || '') !== classFilter) return false;
         if (!term) return true;
         const hay = [item.studentId, item.fullName || item.name, item.classId, item.father, item.phone].join(' ').toLowerCase();
@@ -338,7 +337,6 @@ async function editPortalStudent(id) {
         phone: result.value.phone,
         studentId: result.value.studentId || student.studentId,
         updatedAt: new Date().toISOString(),
-        updatedByUid: VBS_STATE.user?.uid || null,
     };
 
     try {
@@ -356,7 +354,7 @@ async function editPortalStudent(id) {
                 try {
                     const attendanceId = String(record.id || '');
                     if (attendanceId) {
-                        await deleteDoc(doc(window.db, 'vbs_portal', getPortalDocId(), 'attendance', attendanceId));
+                        await deleteDoc(doc(window.db, 'vbsAttendance', attendanceId));
                     }
                 } catch (delErr) {
                     console.warn('Failed to delete orphaned attendance record:', delErr);
@@ -364,8 +362,9 @@ async function editPortalStudent(id) {
             }
         }
 
-        await setDoc(doc(window.db, 'vbs_portal', getPortalDocId(), 'students', id), updated, { merge: true });
+        await setDoc(doc(window.db, 'vbsStudents', id), updated, { merge: true });
         VBS_STATE.portalRoster = (VBS_STATE.portalRoster || []).map(item => String(item.id) === String(id) ? updated : item);
+        createAuditLog('vbs_portal_student_updated', { id, classId: updated.classId, studentId: updated.studentId });
         renderPortalRosterTable();
         renderAttendanceTable();
         refreshTodayReportDateOptions();
@@ -393,14 +392,14 @@ async function handlePortalRosterClick(e) {
     if (!can) return;
 
     try {
-        await deleteDoc(doc(window.db, 'vbs_portal', getPortalDocId(), 'students', id));
+        await deleteDoc(doc(window.db, 'vbsStudents', id));
         const removedStudent = VBS_STATE.portalRoster.find(item => String(item.id) === id);
         const studentId = String(removedStudent?.studentId || '').trim();
         const classId = String(removedStudent?.classId || '').trim();
         const linked = (VBS_STATE.portalAttendance || []).filter(item =>
             String(item.studentId || '') === studentId && String(item.classId || '') === classId
         );
-        await Promise.all(linked.map(item => deleteDoc(doc(window.db, 'vbs_portal', getPortalDocId(), 'attendance', item.id))));
+        await Promise.all(linked.map(item => deleteDoc(doc(window.db, 'vbsAttendance', item.id))));
         await createAuditLog('vbs_portal_student_deleted', { id });
         VBS_STATE.portalRoster = (VBS_STATE.portalRoster || []).filter(item => String(item.id) !== id);
         VBS_STATE.portalAttendance = (VBS_STATE.portalAttendance || []).filter(item => !(String(item.studentId || '') === studentId && String(item.classId || '') === classId));
@@ -565,6 +564,7 @@ function setupUiListeners() {
     document.getElementById('vbs-generate-today-report-btn')?.addEventListener('click', generateTodayReport);
     document.getElementById('vbs-remove-attendance-range-btn')?.addEventListener('click', removeAttendanceByDateRange);
     document.getElementById('vbs-generate-detailed-report-btn')?.addEventListener('click', generateDetailedReport);
+    document.getElementById('vbs-generate-100-percent-report-btn')?.addEventListener('click', generateHundredPercentReport);
 
     // Turnover portal UI
     document.getElementById('vbs-create-portal-btn')?.addEventListener('click', async () => {
@@ -659,6 +659,7 @@ function buildAttendanceRowsForView() {
     const sourceAttendance = VBS_STATE.portalActive ? (VBS_STATE.portalAttendance || []) : (VBS_STATE.attendance || []);
 
     const filteredRoster = sourceRoster.filter(item => {
+        if (VBS_STATE.portalActive && !isRecordInScope(item)) return false;
         if (classFilter && String(item.classId || '') !== classFilter) return false;
         if (!term) return true;
 
@@ -841,7 +842,7 @@ async function handleAttendanceActionClick(e) {
 
     try {
         if (VBS_STATE.portalActive) {
-            await deleteDoc(doc(window.db, 'vbs_portal', getPortalDocId(), 'attendance', attendanceId));
+            await deleteDoc(doc(window.db, 'vbsAttendance', attendanceId));
             VBS_STATE.portalAttendance = (VBS_STATE.portalAttendance || []).filter(item => String(item.id) !== attendanceId);
         } else {
             await deleteDoc(doc(window.db, 'vbsAttendance', attendanceId));
@@ -898,17 +899,17 @@ async function editAttendanceEntry(attendanceId) {
         status: result.value.status,
         vbsDate: result.value.vbsDate,
         updatedAt: new Date().toISOString(),
-        updatedByUid: VBS_STATE.user?.uid || null,
     };
 
     try {
         if (VBS_STATE.portalActive) {
-            await setDoc(doc(window.db, 'vbs_portal', getPortalDocId(), 'attendance', attendanceId), updated, { merge: true });
+            await setDoc(doc(window.db, 'vbsAttendance', attendanceId), updated, { merge: true });
             VBS_STATE.portalAttendance = (VBS_STATE.portalAttendance || []).map(item => String(item.id) === attendanceId ? updated : item);
         } else {
             await setDoc(doc(window.db, 'vbsAttendance', attendanceId), updated, { merge: true });
             VBS_STATE.attendance = (VBS_STATE.attendance || []).map(item => String(item.id) === attendanceId ? updated : item);
         }
+        createAuditLog('vbs_attendance_entry_updated', { attendanceId, status: updated.status, vbsDate: updated.vbsDate });
         renderAttendanceTable();
         refreshTodayReportDateOptions();
         showSuccess('Updated', 'Attendance entry updated successfully.');
@@ -971,8 +972,10 @@ async function quickAddStudentAndMarkNow() {
     const studentId = slugify(result.value.name) + '_' + Date.now();
     const docId = `${result.value.classId}_${studentId}`;
 
+    const portalDocId = getPortalDocId();
     const studentPayload = {
         id: docId,
+        portalId: portalDocId,
         name: result.value.name,
         fullName: result.value.name,
         classId: result.value.classId,
@@ -982,7 +985,6 @@ async function quickAddStudentAndMarkNow() {
         vbsYear: VBS_YEAR_FIXED,
         academicYearId: VBS_STATE.activeAcademicYearId || null,
         createdAt: new Date().toISOString(),
-        createdByUid: VBS_STATE.user?.uid || null,
     };
 
     const attendanceDate = String(document.getElementById('vbs-attendance-date')?.value || '').trim() || toYmd();
@@ -990,6 +992,8 @@ async function quickAddStudentAndMarkNow() {
 
     const attendancePayload = {
         id: attendanceDocId,
+        portalId: portalDocId,
+        vbsStudentId: docId,
         vbsYear: VBS_YEAR_FIXED,
         academicYearId: VBS_STATE.activeAcademicYearId || null,
         classId: result.value.classId,
@@ -998,18 +1002,14 @@ async function quickAddStudentAndMarkNow() {
         status: result.value.status,
         vbsDate: attendanceDate,
         createdAt: new Date().toISOString(),
-        createdByUid: VBS_STATE.user?.uid || null,
-        createdByRole: VBS_STATE.roleData?.role || null,
     };
 
     try {
-        const portalDocId = getPortalDocId();
-
         // Add student to roster
-        await setDoc(doc(window.db, 'vbs_portal', portalDocId, 'students', docId), studentPayload, { merge: false });
+        await setDoc(doc(window.db, 'vbsStudents', docId), studentPayload, { merge: false });
 
         // Mark attendance immediately
-        await setDoc(doc(window.db, 'vbs_portal', portalDocId, 'attendance', attendanceDocId), attendancePayload, { merge: true });
+        await setDoc(doc(window.db, 'vbsAttendance', attendanceDocId), attendancePayload, { merge: true });
 
         // Update local state
         VBS_STATE.portalRoster = [studentPayload, ...(VBS_STATE.portalRoster || [])];
@@ -1059,10 +1059,13 @@ async function saveAttendanceForVisibleRows() {
 
         const docId = getAttendanceDocId(classId, studentId, dateValue);
 
+        const portalDocId = getPortalDocId();
         return {
             docId,
             payload: {
                 id: docId,
+                portalId: portalDocId,
+                vbsStudentId: `${classId}_${studentId}`,
                 vbsYear: VBS_YEAR_FIXED,
                 academicYearId: VBS_STATE.activeAcademicYearId || null,
                 classId,
@@ -1071,19 +1074,14 @@ async function saveAttendanceForVisibleRows() {
                 status,
                 vbsDate: dateValue,
                 updatedAt: new Date().toISOString(),
-                updatedByUid: VBS_STATE.user?.uid || null,
-                updatedByRole: VBS_STATE.roleData?.role || null,
-            }
+                    }
         };
     });
 
     try {
-        await Promise.all(updates.map(item => {
-            if (VBS_STATE.portalActive) {
-                return setDoc(doc(window.db, 'vbs_portal', getPortalDocId(), 'attendance', item.docId), item.payload, { merge: true });
-            }
-            return setDoc(doc(window.db, 'vbsAttendance', item.docId), item.payload, { merge: true });
-        }));
+        await Promise.all(updates.map(item =>
+            setDoc(doc(window.db, 'vbsAttendance', item.docId), item.payload, { merge: true })
+        ));
         const updatedMap = new Map(updates.map(item => [item.docId, item.payload]));
         if (VBS_STATE.portalActive) {
             VBS_STATE.portalAttendance = (VBS_STATE.portalAttendance || []).filter(item => !updatedMap.has(item.id)).concat([...updatedMap.values()]);
@@ -1273,9 +1271,6 @@ async function removeAttendanceByDateRange() {
         const portalDocId = getPortalDocId();
         await Promise.all(entriesToDelete.map(item => {
             if (!item.id) return Promise.resolve();
-            if (VBS_STATE.portalActive) {
-                return deleteDoc(doc(window.db, 'vbs_portal', portalDocId, 'attendance', item.id));
-            }
             return deleteDoc(doc(window.db, 'vbsAttendance', item.id));
         }));
 
@@ -1410,6 +1405,7 @@ function buildDetailedReportData() {
     ])].sort(compareClassIds);
 
     const classRows = [];
+    const summaryRows = [];
     const matrixSections = classIds.map(classId => {
         const rosterRows = sourceRoster
             .filter(item => String(item.classId || '') === classId)
@@ -1444,6 +1440,16 @@ function buildDetailedReportData() {
             };
         });
 
+        studentRows.forEach(student => {
+            summaryRows.push({
+                classId,
+                studentName: student.studentName,
+                presentCount: student.presentCount,
+                totalDays: allDates.length,
+                percentage: student.percentage,
+            });
+        });
+
         const classAttendance = sourceAttendance.filter(item => String(item.classId || '') === classId);
         const presentCount = classAttendance.filter(item => String(item.status || '') === 'Present').length;
         const absentCount = classAttendance.filter(item => String(item.status || '') === 'Absent').length;
@@ -1465,9 +1471,20 @@ function buildDetailedReportData() {
         };
     });
 
+    summaryRows.sort((a, b) => {
+        const percentageCmp = Number(b.percentage || 0) - Number(a.percentage || 0);
+        if (percentageCmp !== 0) return percentageCmp;
+
+        const classCmp = compareClassIds(a.classId, b.classId);
+        if (classCmp !== 0) return classCmp;
+
+        return String(a.studentName || '').localeCompare(String(b.studentName || ''), undefined, { sensitivity: 'base' });
+    });
+
     return {
         classRows,
         matrixSections,
+        summaryRows,
         allDates,
         fromDate: allDates[0] || '',
         toDate: allDates[allDates.length - 1] || '',
@@ -1482,16 +1499,20 @@ async function persistReportSnapshot(type, payload) {
             ? String(VBS_STATE.roleData?.classId || '')
             : String(payload?.classId || '');
 
+        // Extract non-schema fields into report_data JSONB
+        const { classId: _cid, reportDate, entryCount, ...extraStats } = payload || {};
         await setDoc(doc(window.db, 'vbsReports', docId), {
             id: docId,
             reportType: type,
             vbsYear: VBS_YEAR_FIXED,
             academicYearId: VBS_STATE.activeAcademicYearId || null,
             classId: scopedClassId,
+            reportDate: reportDate || null,
+            entryCount: entryCount || null,
             generatedAt: new Date().toISOString(),
-            generatedByUid: VBS_STATE.user?.uid || null,
+            generatedBy: VBS_STATE.user?.uid || null,
             generatedByRole: VBS_STATE.roleData?.role || null,
-            ...payload,
+            reportData: extraStats,
         }, { merge: true });
     } catch (err) {
         console.warn('Failed to persist vbs report snapshot:', err);
@@ -1588,7 +1609,7 @@ async function generateDetailedReport() {
         return showError('PDF library unavailable. Please refresh and try again.');
     }
 
-    const { classRows, matrixSections, allDates, fromDate, toDate } = buildDetailedReportData();
+    const { classRows, matrixSections, summaryRows, allDates, fromDate, toDate } = buildDetailedReportData();
     if (allDates.length === 0 || matrixSections.length === 0) {
         return showError('No attendance data available for detailed report.');
     }
@@ -1655,6 +1676,30 @@ async function generateDetailedReport() {
         }
     });
 
+    if (summaryRows.length > 0) {
+        doc.addPage('a4', 'p');
+        let summaryY = addPdfHeader(doc, 'VBS Attendance Summary', `All students sorted by attendance percentage | VBS Year: ${VBS_YEAR_FIXED}`);
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(11);
+        doc.text('Top rows show the highest attendance percentage, with 100% students listed first.', 10, summaryY);
+        summaryY += 6;
+
+        summaryY = drawPdfTable(
+            doc,
+            ['Sno', 'Name', 'Class', 'Total Days Present', 'Total Days of Class', 'Attendance Percentage'],
+            summaryRows.map((row, index) => [
+                String(index + 1),
+                String(row.studentName || '-'),
+                getClassLabel(row.classId),
+                String(row.presentCount || 0),
+                String(row.totalDays || 0),
+                `${String(row.percentage || 0).replace(/\.0$/, '')}%`
+            ]),
+            summaryY,
+            [16, 68, 26, 30, 30, 20]
+        );
+    }
+
     doc.save(`VBS_Detailed_Report_${VBS_YEAR_FIXED}.pdf`);
 
     await persistReportSnapshot('detailed', {
@@ -1670,6 +1715,64 @@ async function generateDetailedReport() {
         toDate,
         totalEntries: allDates.length,
         classCount: classRows.length,
+        vbsYear: VBS_YEAR_FIXED,
+    });
+}
+
+async function generateHundredPercentReport() {
+    const JsPdf = getJsPdfConstructor();
+    if (!JsPdf) {
+        return showError('PDF library unavailable. Please refresh and try again.');
+    }
+
+    const { summaryRows, allDates, fromDate, toDate } = buildDetailedReportData();
+    if (allDates.length === 0) {
+        return showError('No attendance data available for 100% report.');
+    }
+
+    const perfectRows = (summaryRows || []).filter(row => Number(row.percentage || 0) >= 100);
+    if (perfectRows.length === 0) {
+        return showError('No students with 100% attendance for the selected data period.');
+    }
+
+    const doc = new JsPdf({ orientation: 'portrait', unit: 'mm', format: 'a4', compress: true });
+
+    let y = addPdfHeader(doc, 'VBS 100% Attendance List', `Period: ${formatDate(fromDate)} to ${formatDate(toDate)} | VBS Year: ${VBS_YEAR_FIXED}`);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(11);
+    doc.text(`Students with 100% attendance: ${perfectRows.length}`, 10, y);
+    y += 6;
+
+    drawPdfTable(
+        doc,
+        ['Sno', 'Name', 'Class', 'Total Days Present', 'Total Days of Class', 'Attendance Percentage'],
+        perfectRows.map((row, index) => [
+            String(index + 1),
+            String(row.studentName || '-'),
+            getClassLabel(row.classId),
+            String(row.presentCount || 0),
+            String(row.totalDays || 0),
+            `${String(row.percentage || 0).replace(/\.0$/, '')}%`
+        ]),
+        y,
+        [16, 68, 26, 30, 30, 20]
+    );
+
+    doc.save(`VBS_100_Percent_Attendance_${VBS_YEAR_FIXED}.pdf`);
+
+    await persistReportSnapshot('100_percent', {
+        fromDate,
+        toDate,
+        totalEntries: allDates.length,
+        studentCount: perfectRows.length,
+        classCount: new Set(perfectRows.map(row => String(row.classId || ''))).size,
+    });
+
+    createAuditLog('vbs_100_percent_report_generated', {
+        fromDate,
+        toDate,
+        totalEntries: allDates.length,
+        studentCount: perfectRows.length,
         vbsYear: VBS_YEAR_FIXED,
     });
 }

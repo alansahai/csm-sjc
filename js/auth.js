@@ -1,10 +1,23 @@
 /**
  * auth.js
- * Handles login for Faculty (Firebase Auth) and Students (Firestore Lookup).
+ * Handles login for Faculty (Supabase Auth), Students (DB Lookup),
+ * and Parents (sessionStorage, no auth session needed).
  */
 
+async function logAuthEvent(action, details = {}, actorEmail = 'unknown', actorUid = null) {
+    try {
+        if (!window.supabase) return;
+        await window.supabase.from('activity_logs').insert({
+            action, details,
+            user_email: actorEmail,
+            uid: actorUid,
+            created_at: new Date().toISOString(),
+        });
+    } catch (_) {}
+}
+
 async function getActiveAcademicYearIdFromConfig() {
-    if (!window.db || !window.doc || !window.getDoc) return null;
+    if (!window.db) return null;
     try {
         const snap = await window.getDoc(window.doc(window.db, 'appConfig', 'global'));
         if (!snap.exists()) return null;
@@ -22,12 +35,14 @@ function isStudentInActiveYear(studentData, activeAcademicYearId) {
 }
 
 document.addEventListener('DOMContentLoaded', function () {
-    const loginForm = document.getElementById('login-form');       // Faculty
-    const studentForm = document.getElementById('student-login-form'); // Student
+    const loginForm = document.getElementById('login-form');             // Faculty
+    const studentForm = document.getElementById('student-login-form');   // Student
+    const parentForm = document.getElementById('parent-login-form');     // Parent
 
     // Toggles
     const btnFaculty = document.getElementById('btn-faculty-mode');
     const btnStudent = document.getElementById('btn-student-mode');
+    const btnParent = document.getElementById('btn-parent-mode');
 
     // Faculty Inputs
     const loginButton = document.getElementById('login-button');
@@ -37,6 +52,9 @@ document.addEventListener('DOMContentLoaded', function () {
     // Student Inputs
     const studentLoginBtn = document.getElementById('student-login-btn');
 
+    // Parent Inputs
+    const parentLoginBtn = document.getElementById('parent-login-btn');
+
     showSpinner();
 
     // --- TOGGLE LOGIC ---
@@ -44,16 +62,32 @@ document.addEventListener('DOMContentLoaded', function () {
         btnFaculty.addEventListener('click', () => {
             btnFaculty.classList.add('active');
             btnStudent.classList.remove('active');
+            if (btnParent) btnParent.classList.remove('active');
             loginForm.classList.remove('is-hidden');
             studentForm.classList.add('is-hidden');
+            if (parentForm) parentForm.classList.add('is-hidden');
             hideError();
         });
 
         btnStudent.addEventListener('click', () => {
             btnStudent.classList.add('active');
             btnFaculty.classList.remove('active');
+            if (btnParent) btnParent.classList.remove('active');
             studentForm.classList.remove('is-hidden');
             loginForm.classList.add('is-hidden');
+            if (parentForm) parentForm.classList.add('is-hidden');
+            hideError();
+        });
+    }
+
+    if (btnParent && parentForm) {
+        btnParent.addEventListener('click', () => {
+            btnParent.classList.add('active');
+            if (btnFaculty) btnFaculty.classList.remove('active');
+            if (btnStudent) btnStudent.classList.remove('active');
+            parentForm.classList.remove('is-hidden');
+            loginForm.classList.add('is-hidden');
+            studentForm.classList.add('is-hidden');
             hideError();
         });
     }
@@ -73,7 +107,7 @@ document.addEventListener('DOMContentLoaded', function () {
     if (loginForm) {
         loginForm.addEventListener('submit', async (e) => {
             e.preventDefault();
-            if (!window.auth || !window.signInWithEmailAndPassword) return showError('Auth service not ready.');
+            if (!window.signInWithEmailAndPassword) return showError('Auth service not ready.');
 
             const email = document.getElementById('login-email').value.trim();
             const password = document.getElementById('login-password').value.trim();
@@ -111,41 +145,47 @@ document.addEventListener('DOMContentLoaded', function () {
             hideError();
 
             try {
-                // 1. Try to find by Student ID (Doc ID)
+                // Supabase anon key allows read-only access to public tables — no explicit sign-in needed
                 let studentData = null;
+                let enrollmentData = null;
                 const { doc, getDoc, collection, query, where, getDocs, db } = window;
                 const activeAcademicYearId = await getActiveAcademicYearIdFromConfig();
 
-                // Check by ID first (assuming identifier is the doc ID)
-                const docRef = doc(db, 'students', identifier);
-                const docSnap = await getDoc(docRef);
+                const registerNoInt = parseInt(identifier, 10);
+                const looksLikeRegisterNo = !Number.isNaN(registerNoInt) && String(registerNoInt) === identifier.trim();
 
-                if (docSnap.exists()) {
-                    studentData = docSnap.data();
-                } else {
-                    // 2. If not found by ID, try finding by Phone
-                    const q = query(collection(db, 'students'), where('phone', '==', identifier));
-                    const querySnap = await getDocs(q);
-                    if (!querySnap.empty) {
-                        const candidateStudents = querySnap.docs.map(d => d.data());
-                        studentData = candidateStudents.find(s => !s.academicYearId)
-                            || candidateStudents[0];
+                if (looksLikeRegisterNo && activeAcademicYearId) {
+                    // 1. Look up by register number in active year's enrollments
+                    const enrollSnap = await getDocs(query(
+                        collection(db, 'enrollments'),
+                        where('academicYearId', '==', activeAcademicYearId),
+                        where('registerNo', '==', registerNoInt)
+                    ));
+                    if (!enrollSnap.empty) {
+                        enrollmentData = enrollSnap.docs[0].data();
+                        const studentSnap = await getDoc(doc(db, 'students', String(enrollmentData.studentId)));
+                        if (studentSnap.exists()) studentData = studentSnap.data();
+                    }
+                }
+
+                if (!studentData) {
+                    // 2. Fallback: look up by phone number
+                    const phoneSnap = await getDocs(query(collection(db, 'students'), where('phone', '==', identifier)));
+                    if (!phoneSnap.empty) {
+                        studentData = phoneSnap.docs[0].data();
+                        if (activeAcademicYearId) {
+                            const eSnap = await getDocs(query(
+                                collection(db, 'enrollments'),
+                                where('academicYearId', '==', activeAcademicYearId),
+                                where('studentId', '==', studentData.studentId)
+                            ));
+                            enrollmentData = eSnap.empty ? null : eSnap.docs[0].data();
+                        }
                     }
                 }
 
                 // 3. Validate DOB
                 if (studentData) {
-                    let enrollmentData = null;
-                    if (activeAcademicYearId) {
-                        const enrollmentQuery = query(
-                            collection(db, 'enrollments'),
-                            where('academicYearId', '==', activeAcademicYearId),
-                            where('studentId', '==', studentData.studentId)
-                        );
-                        const enrollmentSnap = await getDocs(enrollmentQuery);
-                        enrollmentData = enrollmentSnap.empty ? null : enrollmentSnap.docs[0].data();
-                    }
-
                     if (studentData.dob === dob) {
                         const activeStudentData = {
                             ...studentData,
@@ -154,14 +194,14 @@ document.addEventListener('DOMContentLoaded', function () {
                             registerNo: enrollmentData?.registerNo ?? studentData.registerNo ?? null,
                             enrollmentId: enrollmentData?.id || null
                         };
-                        // SUCCESS: Store in Session Storage (Cleared on browser close)
                         sessionStorage.setItem('currentStudent', JSON.stringify(activeStudentData));
+                        await logAuthEvent('student_login', { studentId: activeStudentData.studentId, registerNo: activeStudentData.registerNo, classId: activeStudentData.classId }, activeStudentData.email || activeStudentData.phone || 'student', activeStudentData.studentId);
                         window.location.href = 'student.html';
                     } else {
                         throw new Error('Date of Birth does not match our records.');
                     }
                 } else {
-                    throw new Error('Student ID or Mobile Number not found.');
+                    throw new Error('Register number or mobile number not found.');
                 }
 
             } catch (error) {
@@ -174,8 +214,89 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     }
 
-    // --- 3. SESSION RESTORE (Faculty Only) ---
-    // Students use sessionStorage, so they don't auto-login via Firebase Auth state
+    // --- 3. PARENT LOGIN HANDLER ---
+    if (parentForm) {
+        parentForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            const studentId = document.getElementById('parent-student-id').value.trim();
+            const dob = document.getElementById('parent-dob-login').value;
+
+            if (!studentId || !dob) return showError('Please fill in all fields.');
+
+            if (parentLoginBtn) {
+                parentLoginBtn.disabled = true;
+                parentLoginBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Verifying...';
+            }
+            hideError();
+
+            try {
+                const { doc, getDoc, collection, query, where, getDocs, db } = window;
+                if (!db) throw new Error('Database service not ready.');
+
+                // Supabase anon key allows read-only access — no explicit sign-in needed
+                const activeAcademicYearId = await getActiveAcademicYearIdFromConfig();
+
+                // Look up student by ID
+                const docRef = doc(db, 'students', studentId);
+                const docSnap = await getDoc(docRef);
+
+                if (!docSnap.exists()) {
+                    throw new Error('Student ID not found. Please check the ID and try again.');
+                }
+
+                const studentData = docSnap.data();
+
+                if (studentData.dob !== dob) {
+                    throw new Error('Date of Birth does not match our records.');
+                }
+
+                // Get enrollment data for active year
+                let enrollmentData = null;
+                if (activeAcademicYearId) {
+                    const enrollmentQuery = query(
+                        collection(db, 'enrollments'),
+                        where('academicYearId', '==', activeAcademicYearId),
+                        where('studentId', '==', studentData.studentId || studentId)
+                    );
+                    const enrollmentSnap = await getDocs(enrollmentQuery);
+                    enrollmentData = enrollmentSnap.empty ? null : enrollmentSnap.docs[0].data();
+                }
+
+                // Build parent session object
+                const parentSession = {
+                    studentId: studentData.studentId || studentId,
+                    studentName: `${studentData.firstName || ''} ${studentData.lastName || ''}`.trim(),
+                    firstName: studentData.firstName || '',
+                    lastName: studentData.lastName || '',
+                    dob: studentData.dob || dob,
+                    classId: enrollmentData?.classId || studentData.classId || null,
+                    academicYearId: enrollmentData?.academicYearId || studentData.academicYearId || activeAcademicYearId || null,
+                    registerNo: enrollmentData?.registerNo ?? studentData.registerNo ?? null,
+                    enrollmentId: enrollmentData?.id || null,
+                    guardianName: studentData.guardianName || studentData.fatherName || '',
+                    phone: studentData.phone || '',
+                    loginTime: new Date().toISOString()
+                };
+
+                sessionStorage.setItem('parentSession', JSON.stringify(parentSession));
+                await logAuthEvent('parent_login', { studentId: parentSession.studentId, studentName: parentSession.studentName }, parentSession.phone || 'parent', parentSession.studentId);
+                window.location.href = 'parent.html';
+
+            } catch (error) {
+                console.warn('Parent login error:', error);
+                showError(error.message);
+            } finally {
+                if (parentLoginBtn) {
+                    parentLoginBtn.disabled = false;
+                    parentLoginBtn.innerHTML = 'View My Child\'s Portal';
+                }
+            }
+        });
+    }
+
+    // --- 4. SESSION RESTORE (Faculty Only) ---
+    // Students and Parents use sessionStorage — only restore faculty sessions here.
     if (window.onAuthStateChanged) {
         window.onAuthStateChanged(window.auth, async (user) => {
             if (user) {
@@ -190,9 +311,6 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 });
 
-// ... [Keep handleUserRole, getUserRole, showSpinner, hideSpinner, showError, hideError exactly as they were] ...
-// (Re-paste the helper functions from your original auth.js here if you are replacing the file completely)
-
 async function handleUserRole(user) {
     try {
         const userRoleDoc = await getUserRole(user.uid);
@@ -206,12 +324,13 @@ async function handleUserRole(user) {
         };
         localStorage.setItem('currentUser', JSON.stringify(userData));
 
+        await logAuthEvent('login', { role: userRoleDoc.role, classId: userRoleDoc.classId || null }, user.email, user.uid);
         if (userRoleDoc.role === 'admin') window.location.href = 'admin.html';
         else if (userRoleDoc.role === 'faculty') window.location.href = 'faculty.html';
         else throw new Error("Unauthorized role.");
 
     } catch (error) {
-        if (window.auth && window.signOut) await window.signOut(window.auth);
+        if (window.supabase) await window.supabase.auth.signOut();
         localStorage.removeItem('currentUser');
         showError(error.message);
         hideSpinner();
@@ -219,7 +338,7 @@ async function handleUserRole(user) {
 }
 
 async function getUserRole(uid) {
-    if (!window.db || !window.doc || !window.getDoc) return null;
+    if (!window.db) return null;
     try {
         const docSnap = await window.getDoc(window.doc(window.db, 'userRoles', uid));
         return docSnap.exists() ? docSnap.data() : null;

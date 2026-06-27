@@ -5,7 +5,7 @@
  */
 
 // -----------------
-// 🎨 THEME TOGGLE
+// THEME TOGGLE
 // -----------------
 document.addEventListener('DOMContentLoaded', () => {
     const themeToggle = document.getElementById('theme-toggle');
@@ -30,6 +30,35 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 // -----------------
+// SIDEBAR TOGGLE (Mobile)
+// -----------------
+document.addEventListener('DOMContentLoaded', () => {
+    const hamburger = document.getElementById('topbar-hamburger');
+    const sidebar = document.getElementById('app-sidebar');
+    const overlay = document.getElementById('sidebar-overlay');
+
+    if (hamburger && sidebar && overlay) {
+        hamburger.addEventListener('click', () => {
+            sidebar.classList.toggle('open');
+            overlay.classList.toggle('open');
+        });
+        overlay.addEventListener('click', () => {
+            sidebar.classList.remove('open');
+            overlay.classList.remove('open');
+        });
+        // Close sidebar when nav link is clicked on mobile
+        document.querySelectorAll('.sidebar-link').forEach(link => {
+            link.addEventListener('click', () => {
+                if (window.innerWidth <= 1024) {
+                    sidebar.classList.remove('open');
+                    overlay.classList.remove('open');
+                }
+            });
+        });
+    }
+});
+
+// -----------------
 // 🔐 AUTH & SECURITY
 // -----------------
 
@@ -37,10 +66,11 @@ async function logout() {
     if (typeof stopRealtimeListeners === 'function') {
         stopRealtimeListeners();
     }
+    try { await createAuditLog('logout', { portal: window.location.pathname }); } catch (_) {}
     localStorage.removeItem('currentUser');
     try {
-        if (window.auth && window.signOut) {
-            await window.signOut(window.auth);
+        if (window.supabase) {
+            await window.supabase.auth.signOut();
         }
     } catch (error) {
         console.error('Error signing out:', error);
@@ -51,7 +81,7 @@ async function logout() {
 
 async function verifyRoleFromServer(uid, expectedRole) {
     if (!window.db || !window.doc || !window.getDoc) {
-        throw new Error('Firestore connection not ready.');
+        throw new Error('Database connection not ready.');
     }
     try {
         const roleDocRef = window.doc(window.db, 'userRoles', uid);
@@ -97,7 +127,7 @@ async function loadAcademicYearContext(forceRefresh = false) {
         return APP_CONTEXT.activeAcademicYearId;
     }
 
-    if (!window.db || !window.doc || !window.getDoc) {
+    if (!window.db) {
         APP_CONTEXT.loaded = true;
         APP_CONTEXT.activeAcademicYearId = null;
         return null;
@@ -169,7 +199,7 @@ function getCurrentAcademicYearRoster(students = [], enrollments = []) {
     );
 
     return safeEnrollments
-        .filter(enrollment => isCurrentAcademicYear(enrollment))
+        .filter(enrollment => isCurrentAcademicYear(enrollment) && enrollment.status !== 'transferred')
         .map(enrollment => {
             const masterProfile = studentMap.get(String(enrollment.studentId || '')) || {};
             return {
@@ -184,7 +214,7 @@ function getCurrentAcademicYearRoster(students = [], enrollments = []) {
 }
 
 async function watchAcademicYearContext(onChange) {
-    if (!window.db || !window.doc || !window.onSnapshot) return null;
+    if (!window.db) return null;
 
     const configRef = window.doc(window.db, 'appConfig', 'global');
     const unsub = window.onSnapshot(configRef, async snapshot => {
@@ -206,7 +236,7 @@ async function watchAcademicYearContext(onChange) {
 
 async function upsertEnrollmentForStudent(student, updatedBy = '') {
     if (!student || !student.studentId || !student.classId) return null;
-    if (!window.db || !window.doc || !window.getDoc || !window.setDoc) return null;
+    if (!window.db) return null;
 
     const academicYearId = getActiveAcademicYearId();
     if (!academicYearId) return null;
@@ -228,19 +258,36 @@ async function upsertEnrollmentForStudent(student, updatedBy = '') {
     }
 
     if (registerNo === null || Number.isNaN(registerNo)) {
+        // Use hint from add-student form if admin pre-filled it
+        const hintRegNo = student._hintRegisterNo ? Number(student._hintRegisterNo) : null;
+
         const counterId = `${academicYearId}_${classId}`;
         const counterRef = window.doc(window.db, 'classYearCounters', counterId);
         const counterSnap = await window.getDoc(counterRef);
-        const currentNo = counterSnap.exists() ? Number(counterSnap.data().lastRegisterNo || 0) : 0;
-        registerNo = currentNo + 1;
+        const classNum = getClassNumber(classId);
 
-        await window.setDoc(counterRef, {
-            id: counterId,
-            academicYearId,
-            classId,
-            lastRegisterNo: registerNo,
-            updatedAt: new Date().toISOString(),
-        }, { merge: true });
+        if (hintRegNo && !Number.isNaN(hintRegNo)) {
+            registerNo = hintRegNo;
+            // Advance counter to at least the sequence implied by this register number
+            const impliedSeq = classNum != null ? hintRegNo - classNum * 100 : hintRegNo;
+            const currentCount = counterSnap.exists() ? (counterSnap.data().count || 0) : 0;
+            if (impliedSeq > currentCount) {
+                await window.setDoc(counterRef, {
+                    id: counterId, academicYearId, classId,
+                    count: impliedSeq, updatedAt: new Date().toISOString(),
+                }, { merge: true });
+            }
+        } else {
+            const seq = counterSnap.exists() ? (counterSnap.data().count || 0) + 1 : 1;
+            // Apply class-number prefix: "Class 7" → prefix 7 → registerNo 701, 702…
+            registerNo = classNum != null
+                ? parseInt(`${classNum}${String(seq).padStart(2, '0')}`, 10)
+                : seq;
+            await window.setDoc(counterRef, {
+                id: counterId, academicYearId, classId,
+                count: seq, updatedAt: new Date().toISOString(),
+            }, { merge: true });
+        }
     }
 
     const fullName = [student.firstName, student.lastName].filter(Boolean).join(' ').trim();
@@ -258,9 +305,8 @@ async function upsertEnrollmentForStudent(student, updatedBy = '') {
     if (!existingEnrollmentSnap.exists()) {
         enrollmentPayload.createdAt = new Date().toISOString();
     }
-    if (updatedBy) {
-        enrollmentPayload.updatedBy = updatedBy;
-    }
+    // NOTE: enrollments has no `updated_by`/`created_by` column — never write the
+    // `updatedBy` arg to it (Postgres rejects unknown columns). Param kept for callers.
 
     await window.setDoc(enrollmentRef, enrollmentPayload, { merge: true });
     return enrollmentPayload;
@@ -404,23 +450,37 @@ function populateDropdown(selectId, data, valueKeyFn, textKeyFn) {
     select.value = currentValue;
 }
 
-async function createAuditLog(action, details = {}) {
-    if (!window.db || !window.addDoc || !window.collection) return;
+async function createAuditLog(action, details = {}, actorOverride = null) {
+    if (!window.db) return;
 
     try {
-        const localUser = localStorage.getItem('currentUser');
-        const currentUser = JSON.parse(localUser || '{}');
+        let userEmail = 'unknown';
+        let uid = null;
 
-        const logEntry = {
-            action: action,
-            details: details,
-            userEmail: currentUser.email || 'unknown',
-            uid: currentUser.uid || 'unknown',
-            timestamp: window.serverTimestamp ? window.serverTimestamp() : new Date()
-        };
+        if (actorOverride) {
+            userEmail = actorOverride.email || actorOverride.userEmail || 'unknown';
+            uid = actorOverride.uid || null;
+        } else {
+            // Faculty/admin use localStorage; student/parent fall back to sessionStorage
+            const localUser = JSON.parse(localStorage.getItem('currentUser') || '{}');
+            const sessionStudent = JSON.parse(sessionStorage.getItem('currentStudent') || 'null');
+            const sessionParent = JSON.parse(sessionStorage.getItem('parentSession') || 'null');
+            userEmail = localUser.email || sessionStudent?.email || sessionParent?.phone || 'unknown';
+            uid = localUser.uid || sessionStudent?.studentId || sessionParent?.studentId || null;
+        }
 
-        const logCollectionRef = window.collection(window.db, 'activityLogs');
-        await window.addDoc(logCollectionRef, logEntry);
+        // Use Supabase client directly for a simple insert
+        const { error } = await window.supabase
+            .from('activity_logs')
+            .insert({
+                action,
+                details,
+                user_email: userEmail,
+                uid:        uid,
+                created_at: new Date().toISOString(),
+            });
+
+        if (error) console.warn('Audit log insert error:', error.message);
 
     } catch (err) {
         console.warn('Failed to create audit log:', err);
@@ -490,7 +550,7 @@ function renderAttendanceChart(studentId, DATA_MODELS, targetId = 'attendance-ch
     if (existingChart) existingChart.destroy();
 
     const monthlyAttendance = {};
-    DATA_MODELS.sessions.filter(s => s.status === 'Available').forEach(session => {
+    DATA_MODELS.sessions.filter(s => s.status === 'Available' && s.date).forEach(session => {
         const month = session.date.substring(0, 7);
         if (!monthlyAttendance[month]) {
             monthlyAttendance[month] = { total: 0, present: 0 };
@@ -579,24 +639,42 @@ function prepareChartsForPrint(containerId) {
     };
 }
 
+// Opens a clean, standalone report document (NOT a print of the live webpage) and
+// triggers the browser print dialog on it — letting the user print or Save as PDF.
 function printReport(containerId, reportTitle) {
     const container = document.getElementById(containerId);
     if (!container) return;
 
+    // Convert any <canvas> charts to <img> so they survive being copied into the new doc.
     const restoreCharts = prepareChartsForPrint(containerId);
+    const contentHtml = container.innerHTML;
+    restoreCharts(); // restore the live charts in the page immediately
 
-    let titleEl = null;
-    if (!container.querySelector('h2')) {
-        titleEl = document.createElement('div');
-        titleEl.innerHTML = `<h2 style="text-align:center; margin-bottom:10px;">${escapeHtml(reportTitle)}</h2>
-                             <p style="text-align:center; color:gray; margin-bottom:20px;">Generated: ${new Date().toLocaleString()}</p>`;
-        container.insertBefore(titleEl, container.firstChild);
+    const win = window.open('', '_blank', 'width=900,height=700');
+    if (!win) {
+        if (typeof showError === 'function') showError('Pop-up blocked. Please allow pop-ups to print the report.');
+        return;
     }
-
-    window.print();
-
-    if (titleEl) titleEl.remove();
-    restoreCharts();
+    win.document.write(`<!DOCTYPE html><html><head><title>${escapeHtml(reportTitle)}</title>
+    <style>
+      @page { size: A4 portrait; margin: 14mm; }
+      body { font-family: Arial, Helvetica, sans-serif; font-size: 12px; color: #222; margin: 0; }
+      h1,h2,h3,h4,h5 { color: #1e1b4b; }
+      table { width: 100%; border-collapse: collapse; margin-bottom: 14px; }
+      th, td { border: 1px solid #ccc; padding: 5px 8px; text-align: left; }
+      th { background: #f1f5f9; }
+      tr { page-break-inside: avoid; }
+      .text-success { color: #16a34a; font-weight: 600; }
+      .text-danger { color: #ef4444; font-weight: 600; }
+      img, canvas { max-width: 100%; }
+      .no-print, button { display: none !important; }
+    </style></head><body>
+    <h2 style="text-align:center;margin:0 0 4px;">${escapeHtml(reportTitle)}</h2>
+    <p style="text-align:center;color:gray;margin:0 0 16px;font-size:11px;">Generated: ${new Date().toLocaleString()}</p>
+    ${contentHtml}
+    <script>window.onload=function(){setTimeout(function(){window.print();},200);}<\/script>
+    </body></html>`);
+    win.document.close();
 }
 
 function downloadCSV(content, filename) {
@@ -694,6 +772,51 @@ async function downloadContainerAsPDF(containerId, filename) {
     }
 }
 
+/**
+ * Generate a standalone PDF from an HTML string — a separate report document,
+ * NOT a browser print of the current page. The markup is rendered into an
+ * off-screen holder (kept in the DOM so html2canvas can paint it), exported
+ * via html2pdf, then removed.
+ *
+ * @param {string} innerHtml  Report body markup.
+ * @param {string} filename   e.g. "Todays_Attendance.pdf"
+ * @param {'portrait'|'landscape'} orientation
+ */
+async function downloadHtmlAsPdf(innerHtml, filename, orientation = 'portrait') {
+    if (typeof html2pdf === 'undefined') {
+        console.error('html2pdf library not loaded');
+        if (typeof showError === 'function') showError('PDF library not loaded. Please reload and try again.');
+        return;
+    }
+    const holder = document.createElement('div');
+    holder.style.position = 'fixed';
+    holder.style.left = '-10000px';
+    holder.style.top = '0';
+    holder.style.width = orientation === 'landscape' ? '297mm' : '210mm';
+    holder.style.background = '#ffffff';
+    holder.innerHTML = innerHtml;
+    document.body.appendChild(holder);
+
+    const opt = {
+        margin: 0,
+        filename,
+        image: { type: 'jpeg', quality: 0.98 },
+        html2canvas: { scale: 2, useCORS: true, logging: false, backgroundColor: '#ffffff' },
+        jsPDF: { unit: 'mm', format: 'a4', orientation },
+        pagebreak: { mode: ['css', 'legacy'] }
+    };
+
+    try {
+        await html2pdf().set(opt).from(holder).save();
+    } catch (err) {
+        console.error('PDF generation error:', err);
+        if (typeof showError === 'function') showError('Failed to generate PDF: ' + err.message);
+    } finally {
+        holder.remove();
+    }
+}
+window.downloadHtmlAsPdf = downloadHtmlAsPdf;
+
 // ---------------------------------------------------
 // 🎓 PHASE 1: ACADEMIC YEAR CORE INFRASTRUCTURE
 // ---------------------------------------------------
@@ -703,7 +826,7 @@ async function downloadContainerAsPDF(containerId, filename) {
  * Creates or fetches the app-level configuration document
  */
 async function initializeAppConfig() {
-    if (!window.db || !window.getDoc || !window.setDoc || !window.doc) return null;
+    if (!window.db) return null;
 
     try {
         const configRef = window.doc(window.db, 'appConfig', 'global');
@@ -734,7 +857,7 @@ async function initializeAppConfig() {
  * PHASE 1: Set active academic year in appConfig/global
  */
 async function setActiveAcademicYear(yearId) {
-    if (!window.db || !window.updateDoc || !window.doc) return false;
+    if (!window.db) return false;
 
     try {
         const configRef = window.doc(window.db, 'appConfig', 'global');
@@ -758,7 +881,7 @@ async function setActiveAcademicYear(yearId) {
  * @param {string} previousYearId - optional, for migration tracking
  */
 async function createAcademicYear(yearLabel, startDate, endDate, previousYearId = null) {
-    if (!window.db || !window.setDoc || !window.doc) return null;
+    if (!window.db) return null;
 
     try {
         const yearId = yearLabel.replace(/\s+/g, '_').toLowerCase();
@@ -789,7 +912,7 @@ async function createAcademicYear(yearLabel, startDate, endDate, previousYearId 
  * PHASE 1: Fetch all academic years, sorted by start date descending
  */
 async function fetchAllAcademicYears() {
-    if (!window.db || !window.getDocs || !window.query || !window.collection) return [];
+    if (!window.db) return [];
 
     try {
         const yearsRef = window.collection(window.db, 'academicYears');
@@ -815,7 +938,7 @@ async function fetchAllAcademicYears() {
  * PHASE 1: Enable/disable migration for a year
  */
 async function setMigrationEnabled(yearId, enabled) {
-    if (!window.db || !window.updateDoc || !window.doc) return false;
+    if (!window.db) return false;
 
     try {
         const yearRef = window.doc(window.db, 'academicYears', yearId);
@@ -834,49 +957,77 @@ async function setMigrationEnabled(yearId, enabled) {
 /**
  * PHASE 1: Create or update an enrollment record
  * Links a student to a class in a specific academic year
- * Auto-generates register number from classYearCounters
+ * Auto-generates register number in format: {classNumber}{seq:02}
+ * e.g. class-7 student 3 → 703, class-6 student 12 → 612
  */
+function getClassNumber(classId, className) {
+    // Prefer the class's display name (e.g. "Class 7" → 7) over the raw ID,
+    // so mismatched IDs like "class-6" with name "Class 7" produce the correct prefix.
+    const nameSource = className
+        || (Array.isArray(window.DATA_MODELS?.classes)
+            ? (window.DATA_MODELS.classes.find(c => c.id === classId)?.name || '')
+            : '');
+    if (nameSource) {
+        const nameMatch = /(\d+)/.exec(String(nameSource));
+        if (nameMatch) return parseInt(nameMatch[1], 10);
+    }
+    // Fall back to extracting from classId (e.g., "class-7" → 7)
+    const match = /(\d+)/.exec(String(classId || ''));
+    return match ? parseInt(match[1], 10) : null;
+}
+window.getClassNumber = getClassNumber;
+
 async function createOrUpdateEnrollment(academicYearId, classId, studentId, studentData = {}) {
-    if (!window.db || !window.setDoc || !window.doc || !window.updateDoc || !window.serverTimestamp) return null;
+    if (!window.db) return null;
 
     try {
-        // Get/create class-year register counter
-        const counterId = `${academicYearId}_${classId}`;
-        const counterRef = window.doc(window.db, 'classYearCounters', counterId);
-
-        // Atomic increment: get current count and increment
-        const counterSnap = await window.getDoc(counterRef);
-        let registerNo = 1;
-
-        if (counterSnap.exists()) {
-            registerNo = (counterSnap.data().count || 0) + 1;
-        } else {
-            // Create counter at 1
-            await window.setDoc(counterRef, {
-                academicYearId: academicYearId,
-                classId: classId,
-                count: 1,
-                createdAt: window.serverTimestamp()
-            });
-        }
-
-        // Update counter
-        await window.updateDoc(counterRef, {
-            count: registerNo,
-            updatedAt: window.serverTimestamp()
-        });
-
-        // Create/update enrollment
         const enrollmentId = `${academicYearId}_${classId}_${studentId}`;
         const enrollmentRef = window.doc(window.db, 'enrollments', enrollmentId);
 
+        // If enrollment already exists with a registerNo, preserve it — don't re-increment counter
+        const existingSnap = await window.getDoc(enrollmentRef);
+        if (existingSnap.exists() && existingSnap.data().registerNo != null) {
+            const extra = {};
+            if (studentData.status) extra.status = studentData.status;
+            if (studentData.fullName) extra.fullName = studentData.fullName;
+            if (studentData.promotedFromClass) extra.promotedFromClass = studentData.promotedFromClass;
+            if (studentData.promotedFromYear) extra.promotedFromYear = studentData.promotedFromYear;
+            if (studentData.promotedAt) extra.promotedAt = studentData.promotedAt;
+            if (studentData.migratedFromYearId) extra.migratedFromYearId = studentData.migratedFromYearId;
+            await window.setDoc(enrollmentRef, { ...extra, updatedAt: window.serverTimestamp() }, { merge: true });
+            const existing = existingSnap.data();
+            return { id: enrollmentId, registerNo: existing.registerNo, ...existing };
+        }
+
+        // New enrollment — assign next sequence number and format register number
+        const counterId = `${academicYearId}_${classId}`;
+        const counterRef = window.doc(window.db, 'classYearCounters', counterId);
+        const counterSnap = await window.getDoc(counterRef);
+        const seq = counterSnap.exists() ? (counterSnap.data().count || 0) + 1 : 1;
+
+        // Update counter
+        await window.setDoc(counterRef, {
+            academicYearId, classId, count: seq,
+            updatedAt: window.serverTimestamp()
+        }, { merge: true });
+
+        // Register number: classNumber + zero-padded 2-digit sequence  (e.g. 701, 702 … 715)
+        const classNum = getClassNumber(classId);
+        const registerNo = classNum != null
+            ? parseInt(`${classNum}${String(seq).padStart(2, '0')}`, 10)
+            : seq;
+
         const enrollmentData = {
             id: enrollmentId,
-            academicYearId: academicYearId,
-            classId: classId,
-            studentId: studentId,
-            registerNo: registerNo,
-            status: 'active', // or 'inactive', 'transferred'
+            academicYearId,
+            classId,
+            studentId,
+            registerNo,
+            status: 'active',
+            fullName: studentData.fullName || null,
+            promotedFromClass: studentData.promotedFromClass || null,
+            promotedFromYear: studentData.promotedFromYear || null,
+            promotedAt: studentData.promotedAt || null,
             migratedFromYearId: studentData.migratedFromYearId || null,
             createdAt: window.serverTimestamp(),
             updatedAt: window.serverTimestamp()
@@ -895,7 +1046,7 @@ async function createOrUpdateEnrollment(academicYearId, classId, studentId, stud
  * PHASE 1: Fetch enrollments for a specific class and academic year
  */
 async function fetchEnrollmentsForClass(academicYearId, classId) {
-    if (!window.db || !window.getDocs || !window.query || !window.collection || !window.where) return [];
+    if (!window.db) return [];
 
     try {
         const enrollmentsRef = window.collection(window.db, 'enrollments');
@@ -917,3 +1068,30 @@ async function fetchEnrollmentsForClass(academicYearId, classId) {
         return [];
     }
 }
+
+// -----------------
+// 📊 ATTENDANCE PERCENTAGE HELPER (A2)
+// -----------------
+function calcStudentAttendancePct(studentId, sessionsArr, attendanceArr) {
+    const available = (sessionsArr || []).filter(s => s.status === 'Available');
+    if (available.length === 0) return null;
+    const present = (attendanceArr || []).filter(a =>
+        String(a.studentId) === String(studentId) &&
+        (a.status === 'Present' || a.status === 'Late')
+    ).length;
+    return Math.round((present / available.length) * 100);
+}
+window.calcStudentAttendancePct = calcStudentAttendancePct;
+
+// -----------------
+// 🔤 LETTER GRADE HELPER (B3)
+// -----------------
+function getLetterGrade(percentage) {
+    if (percentage == null || isNaN(percentage)) return null;
+    if (percentage >= 90) return { grade: 'A', label: 'Excellent', css: 'grade-A' };
+    if (percentage >= 75) return { grade: 'B', label: 'Good', css: 'grade-B' };
+    if (percentage >= 60) return { grade: 'C', label: 'Average', css: 'grade-C' };
+    if (percentage >= 45) return { grade: 'D', label: 'Below Average', css: 'grade-D' };
+    return { grade: 'F', label: 'Fail', css: 'grade-F' };
+}
+window.getLetterGrade = getLetterGrade;

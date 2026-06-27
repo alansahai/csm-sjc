@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Parent Portal — St. Jude's Catechism</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⛪</text></svg>">
+    <link rel="stylesheet" href="css/style.css">
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+    <script src="/supabase.config.js"></script>
+    <script src="js/supabase.js"></script>
+    <script src="js/common.js" defer></script>
+    <script src="js/parent.js" defer></script>
+</head>
+<body>
+    <div id="full-page-spinner" class="spinner-overlay">
+        <div class="spinner"></div>
+    </div>
+
+    <div class="portal-layout" id="parent-app" style="display:none;">
+        <header class="portal-header">
+            <div class="portal-header-inner">
+                <div class="portal-header-start">
+                    <div class="portal-brand">
+                        <div class="portal-brand-icon" style="background:linear-gradient(135deg,#f59e0b,#d97706);">
+                            <i class="fas fa-home"></i>
+                        </div>
+                        <div class="portal-brand-text">
+                            <div class="portal-brand-title">Parent Portal</div>
+                            <div class="portal-brand-sub">St. Jude's Catechism</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="portal-header-end">
+                    <span id="parent-child-name-display" style="font-weight:600;color:var(--text-primary);margin-right:12px;font-size:0.95rem;"></span>
+                    <button class="btn btn-secondary btn-sm" id="parent-logout-btn">
+                        <i class="fas fa-sign-out-alt"></i> Sign Out
+                    </button>
+                </div>
+            </div>
+        </header>
+
+        <div class="portal-content">
+            <div style="max-width:900px;margin:0 auto;padding:20px 16px;">
+
+                <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:24px;">
+                    <button class="btn btn-primary parent-tab-btn" data-tab="overview">
+                        <i class="fas fa-home"></i> Overview
+                    </button>
+                    <button class="btn btn-secondary parent-tab-btn" data-tab="attendance">
+                        <i class="fas fa-calendar-check"></i> Attendance
+                    </button>
+                    <button class="btn btn-secondary parent-tab-btn" data-tab="results">
+                        <i class="fas fa-clipboard-list"></i> Results
+                    </button>
+                    <button class="btn btn-secondary parent-tab-btn" data-tab="homework">
+                        <i class="fas fa-book-open"></i> Homework
+                    </button>
+                </div>
+
+                <!-- OVERVIEW TAB -->
+                <div id="parent-tab-overview" class="parent-tab-content">
+                    <div class="grid" style="grid-template-columns:repeat(2,1fr);margin-bottom:24px;">
+                        <div class="card">
+                            <div style="font-size:0.82rem;color:var(--text-muted);font-weight:500;margin-bottom:4px;text-transform:uppercase;letter-spacing:0.05em;">Attendance</div>
+                            <div id="p-att-pct" style="font-size:2.2rem;font-weight:700;color:var(--primary);">—</div>
+                            <div id="p-att-detail" style="font-size:0.82rem;color:var(--text-muted);margin-top:2px;"></div>
+                        </div>
+                        <div class="card">
+                            <div style="font-size:0.82rem;color:var(--text-muted);font-weight:500;margin-bottom:4px;text-transform:uppercase;letter-spacing:0.05em;">Latest Assessment</div>
+                            <div id="p-latest-score" style="font-size:2.2rem;font-weight:700;color:var(--success);">—</div>
+                            <div id="p-latest-assessment-name" style="font-size:0.82rem;color:var(--text-muted);margin-top:2px;"></div>
+                        </div>
+                        <div class="card">
+                            <div style="font-size:0.82rem;color:var(--text-muted);font-weight:500;margin-bottom:4px;text-transform:uppercase;letter-spacing:0.05em;">Class</div>
+                            <div id="p-class-name" style="font-size:1.4rem;font-weight:700;color:var(--text-primary);">—</div>
+                        </div>
+                        <div class="card">
+                            <div style="font-size:0.82rem;color:var(--text-muted);font-weight:500;margin-bottom:4px;text-transform:uppercase;letter-spacing:0.05em;">Pending Homework</div>
+                            <div id="p-hw-pending-count" style="font-size:2.2rem;font-weight:700;color:var(--warning);">—</div>
+                        </div>
+                    </div>
+
+                    <div class="card">
+                        <div class="card-header">
+                            <h2 class="card-title">
+                                <i class="fas fa-bullhorn" style="color:var(--primary);margin-right:8px;"></i>Announcements
+                            </h2>
+                        </div>
+                        <div id="p-announcements-list">
+                            <p style="color:var(--text-muted);text-align:center;padding:16px;">Loading announcements...</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ATTENDANCE TAB -->
+                <div id="parent-tab-attendance" class="parent-tab-content" style="display:none;">
+                    <div class="card">
+                        <div class="card-header">
+                            <h2 class="card-title"><i class="fas fa-calendar-check" style="color:var(--primary);margin-right:8px;"></i>Attendance History</h2>
+                        </div>
+                        <div id="p-attendance-summary" style="margin-bottom:16px;padding:12px 0;color:var(--text-secondary);font-size:0.95rem;"></div>
+                        <div class="table-wrapper">
+                            <table class="data-table">
+                                <thead>
+                                    <tr><th>Date</th><th>Status</th></tr>
+                                </thead>
+                                <tbody id="p-attendance-tbody"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- RESULTS TAB -->
+                <div id="parent-tab-results" class="parent-tab-content" style="display:none;">
+                    <div class="card">
+                        <div class="card-header">
+                            <h2 class="card-title"><i class="fas fa-clipboard-list" style="color:var(--primary);margin-right:8px;"></i>Assessment Results</h2>
+                        </div>
+                        <div class="table-wrapper">
+                            <table class="data-table">
+                                <thead>
+                                    <tr><th>Assessment</th><th>Date</th><th>Score</th><th>Grade</th></tr>
+                                </thead>
+                                <tbody id="p-results-tbody"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- HOMEWORK TAB -->
+                <div id="parent-tab-homework" class="parent-tab-content" style="display:none;">
+                    <div class="card">
+                        <div class="card-header">
+                            <h2 class="card-title"><i class="fas fa-book-open" style="color:var(--primary);margin-right:8px;"></i>Homework Assignments</h2>
+                        </div>
+                        <div id="p-homework-list">
+                            <p style="color:var(--text-muted);text-align:center;padding:20px;">Loading assignments...</p>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+    </div>
+</body>
+</html>

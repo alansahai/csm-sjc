@@ -1,16 +1,37 @@
-firebase.config.js
+# ── Secrets / environment ─────────────────────────────
 .env
+.env.*
+firebase.config.js
+# Firebase service-account private keys (never commit)
+**/serviceAccountKey.json
+*.pem
+*.key
 
-# Local editor/workspace settings
+# ── Dependencies ──────────────────────────────────────
+node_modules/
+**/node_modules/
+
+# ── Firebase migration tooling (local only: secrets, backups, deps) ──
+firebase_mig/
+
+# ── Claude Code / agent artifacts ─────────────────────
+.claude/
+
+# ── Local editor / workspace settings ─────────────────
 .vscode/
 .idea/
 
-# Local logs and debug artifacts
+# ── Local logs and debug artifacts ────────────────────
 *.log
 *.tmp
 *.temp
 
-# Generated planning / scratch docs
+# ── OS files ──────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Generated planning / scratch docs ─────────────────
 IMPLEMENTATION_SUMMARY.md
 NEW_IMPLEMENTATION_PLAN.txt
 TODO.md

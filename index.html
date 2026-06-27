@@ -6,71 +6,17 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Catechism Manager Login</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⛪</text></svg>">
     <link rel="stylesheet" href="css/style.css">
 
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
 
-    <script src="/firebase.config.js"></script>
-    <script type="module">
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/12.5.0/firebase-app.js";
-        import { getFirestore, doc, getDoc, collection, query, where, getDocs } from "https://www.gstatic.com/firebasejs/12.5.0/firebase-firestore.js";
-        import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/12.5.0/firebase-auth.js";
-
-        const firebaseConfig = window.__FIREBASE_CONFIG__;
-        if (!firebaseConfig) {
-            console.error("Firebase config is missing!");
-            Swal.fire('Configuration Error', 'Firebase config is missing. The app cannot start.', 'error');
-        } else {
-            const app = initializeApp(firebaseConfig);
-            // Expose Firestore methods for Student Login lookup
-            window.db = getFirestore(app);
-            window.doc = doc;
-            window.getDoc = getDoc;
-            window.collection = collection;
-            window.query = query;
-            window.where = where;
-            window.getDocs = getDocs;
-
-            // Auth methods
-            window.auth = getAuth(app);
-            window.signInWithEmailAndPassword = signInWithEmailAndPassword;
-            window.onAuthStateChanged = onAuthStateChanged;
-            window.signOut = signOut;
-        }
-    </script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+    <script src="/supabase.config.js"></script>
+    <script src="js/supabase.js"></script>
 
     <script src="js/auth.js" defer></script>
 
-    <style>
-        /* Inline styles for the login toggle */
-        .login-toggle {
-            display: flex;
-            background: var(--border-color);
-            border-radius: 50px;
-            padding: 5px;
-            margin-bottom: 25px;
-            position: relative;
-        }
-
-        .toggle-btn {
-            flex: 1;
-            border: none;
-            background: transparent;
-            padding: 10px;
-            border-radius: 50px;
-            cursor: pointer;
-            font-weight: 600;
-            color: var(--text-color-light);
-            transition: all 0.3s ease;
-            z-index: 2;
-        }
-
-        .toggle-btn.active {
-            background: var(--bg-color-alt);
-            color: var(--primary);
-            box-shadow: 0 2px 5px var(--shadow-color);
-        }
-    </style>
 </head>
 
 <body>
@@ -78,49 +24,73 @@
         <div class="spinner"></div>
     </div>
 
-    <div id="login-screen" class="login-container">
-        <div class="login-box">
-            <i class="fas fa-church login-icon"></i>
-            <h2>Catechism Manager</h2>
-
-            <div class="login-toggle">
-                <button type="button" class="toggle-btn active" id="btn-faculty-mode">Faculty Login</button>
-                <button type="button" class="toggle-btn" id="btn-student-mode">Student Login</button>
+    <div class="login-page">
+        <div class="login-brand">
+            <div class="login-brand-content">
+                <div class="login-brand-icon"><i class="fas fa-church"></i></div>
+                <h1>Catechism Management System</h1>
+                <p>St. Jude's Catechism — A complete portal for managing attendance, assessments, and student records.</p>
+                <div class="login-brand-features">
+                    <div class="login-feature"><i class="fas fa-users"></i><span>Multi-role access control</span></div>
+                    <div class="login-feature"><i class="fas fa-calendar-check"></i><span>Attendance tracking</span></div>
+                    <div class="login-feature"><i class="fas fa-clipboard-list"></i><span>Assessment management</span></div>
+                    <div class="login-feature"><i class="fas fa-star"></i><span>Early Angel program</span></div>
+                </div>
             </div>
-
-            <form id="login-form">
-                <div class="form-group">
-                    <label for="login-email">Email</label>
-                    <input type="email" id="login-email" placeholder="you@email.com" required>
+        </div>
+        <div class="login-form-area">
+            <div class="login-box" id="login-screen">
+                <div class="login-box-header">
+                    <h2>Welcome back</h2>
+                    <p>Sign in to your portal</p>
                 </div>
-                <div class="form-group">
-                    <label for="login-password">Password</label>
-                    <div class="password-wrapper">
-                        <input type="password" id="login-password" placeholder="Password" required>
-                        <span id="toggle-password" class="password-toggle">
-                            <i class="fas fa-eye"></i>
-                        </span>
+
+                <div class="login-toggle">
+                    <button class="toggle-btn active" id="btn-faculty-mode" type="button"><i class="fas fa-chalkboard-teacher"></i> Faculty</button>
+                    <button class="toggle-btn" id="btn-student-mode" type="button"><i class="fas fa-user-graduate"></i> Student</button>
+                    <button class="toggle-btn" id="btn-parent-mode" type="button"><i class="fas fa-user-friends"></i> Parent</button>
+                </div>
+
+                <form id="login-form">
+                    <div class="form-group">
+                        <label for="login-email">Email Address</label>
+                        <input type="email" id="login-email" placeholder="Enter your email" required>
                     </div>
-                </div>
-                <button type="submit" id="login-button" class="btn btn-primary btn-full-width">
-                    Faculty Login
-                </button>
-            </form>
+                    <div class="form-group">
+                        <label for="login-password">Password</label>
+                        <div class="password-wrapper">
+                            <input type="password" id="login-password" placeholder="Enter your password" required>
+                            <button type="button" class="password-toggle" id="toggle-password"><i class="fas fa-eye"></i></button>
+                        </div>
+                    </div>
+                    <button type="submit" class="btn btn-primary btn-full-width btn-lg" id="login-button">Sign In</button>
+                </form>
 
-            <form id="student-login-form" class="is-hidden">
-                <div class="form-group">
-                    <label for="student-identifier">Student ID or Mobile</label>
-                    <input type="text" id="student-identifier" placeholder="e.g. 101 or 9876543210" required>
-                </div>
-                <div class="form-group">
-                    <label for="student-dob-login">Date of Birth</label>
-                    <input type="date" id="student-dob-login" required>
-                </div>
-                <button type="submit" id="student-login-btn" class="btn btn-success btn-full-width">
-                    Student Login
-                </button>
-            </form>
+                <form id="student-login-form" class="is-hidden">
+                    <div class="form-group">
+                        <label for="student-identifier">Register Number or Mobile</label>
+                        <input type="text" id="student-identifier" placeholder="Enter register no. or mobile" required inputmode="numeric">
+                    </div>
+                    <div class="form-group">
+                        <label for="student-dob-login">Date of Birth</label>
+                        <input type="date" id="student-dob-login" required>
+                    </div>
+                    <button type="submit" class="btn btn-success btn-full-width btn-lg" id="student-login-btn">Access Portal</button>
+                </form>
 
+                <form id="parent-login-form" class="is-hidden">
+                    <p style="color:var(--text-color-light);font-size:0.88rem;margin-bottom:12px;"><i class="fas fa-info-circle"></i> Use your child's Student ID and their Date of Birth to access the Parent Portal.</p>
+                    <div class="form-group">
+                        <label for="parent-student-id">Child's Student ID</label>
+                        <input type="text" id="parent-student-id" placeholder="Enter child's student ID" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="parent-dob-login">Child's Date of Birth</label>
+                        <input type="date" id="parent-dob-login" required>
+                    </div>
+                    <button type="submit" class="btn btn-warning btn-full-width btn-lg" id="parent-login-btn" style="background-color:#d97706;border-color:#d97706;color:#fff;">View My Child's Portal</button>
+                </form>
+            </div>
         </div>
     </div>
 

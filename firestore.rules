@@ -10,6 +10,11 @@ service cloud.firestore {
       return isSignedIn() && exists(/databases/$(database)/documents/userRoles/$(request.auth.uid));
     }
 
+    // Anonymous Firebase Auth user — student or parent portal sessions
+    function isAnonUser() {
+      return isSignedIn() && !hasRoleDoc();
+    }
+
     function role() {
       return hasRoleDoc() ? get(/databases/$(database)/documents/userRoles/$(request.auth.uid)).data.role : null;
     }
@@ -114,45 +119,45 @@ service cloud.firestore {
     // Master student profile docs
     match /students/{studentId} {
       allow read: if isAdmin()
-                  || (isFaculty() && facultyCanAccessByClass())
-                  || !isSignedIn();
+                  || isFaculty()
+                  || isAnonUser();
       allow write: if isAdmin() || (facultyCanWriteByClass() && requestInActiveYear());
     }
 
-    // Yearly class enrollments
+    // Yearly class enrollments — only admin can assign students to classes
     match /enrollments/{enrollmentId} {
       allow read: if isAdmin()
                   || (isFaculty() && resource.data.classId == facultyClassId())
-                  || !isSignedIn();
-      allow write: if isAdmin() || (isFaculty() && requestInActiveYear() && request.resource.data.classId == facultyClassId());
+                  || isAnonUser();
+      allow write: if isAdmin();
     }
 
     // Year-scoped collections
     match /sessions/{sessionId} {
       allow read: if isAdmin()
                   || (isFaculty() && recordInActiveYear())
-                  || !isSignedIn();
+                  || isAnonUser();
       allow write: if isAdmin() || (isFaculty() && requestInActiveYear());
     }
 
     match /assessments/{assessmentId} {
       allow read: if isAdmin()
                   || (isFaculty() && facultyCanAccessByClass() && recordInActiveYear())
-                  || !isSignedIn();
+                  || isAnonUser();
       allow write: if isAdmin() || (facultyCanWriteByClass() && requestInActiveYear());
     }
 
     match /attendance/{attendanceId} {
       allow read: if isAdmin()
                   || (isFaculty() && facultyCanAccessByClass() && recordInActiveYear())
-                  || !isSignedIn();
+                  || isAnonUser();
       allow write: if isAdmin() || (facultyCanWriteByClass() && requestInActiveYear());
     }
 
     match /scores/{scoreId} {
       allow read: if isAdmin()
                   || (isFaculty() && facultyCanAccessByClass() && recordInActiveYear())
-                  || !isSignedIn();
+                  || isAnonUser();
       allow write: if isAdmin() || (facultyCanWriteByClass() && requestInActiveYear());
     }
 
@@ -172,32 +177,32 @@ service cloud.firestore {
     // Early Angel + VBS (Phase 1 schema readiness)
     match /earlyAngelEntries/{entryId} {
       allow read: if isAdmin()
-                  || (isFaculty() && resource.data.classId == facultyClassId() && recordInActiveYear())
-                  || !isSignedIn();
+                  || (isFaculty() && recordInActiveYear())
+                  || isAnonUser();
       allow create, update: if isAdmin()
-                            || (isFaculty() && request.resource.data.classId == facultyClassId() && requestInActiveYear());
+                            || (isFaculty() && requestInActiveYear());
       allow delete: if isAdmin()
-                    || (isFaculty() && resource.data.classId == facultyClassId() && recordInActiveYear());
+                    || (isFaculty() && recordInActiveYear());
     }
 
     match /earlyAngelDailySummary/{summaryId} {
       allow read: if isAdmin()
-                  || (isFaculty() && resource.data.classId == facultyClassId() && recordInActiveYear())
-                  || !isSignedIn();
+                  || (isFaculty() && recordInActiveYear())
+                  || isAnonUser();
       allow create, update: if isAdmin()
-                            || (isFaculty() && request.resource.data.classId == facultyClassId() && requestInActiveYear());
+                            || (isFaculty() && requestInActiveYear());
       allow delete: if isAdmin()
-                    || (isFaculty() && resource.data.classId == facultyClassId() && recordInActiveYear());
+                    || (isFaculty() && recordInActiveYear());
     }
 
     match /earlyAngelLeaderboard/{leaderboardId} {
       allow read: if isAdmin()
-                  || (isFaculty() && resource.data.classId == facultyClassId() && recordInActiveYear())
-                  || !isSignedIn();
+                  || (isFaculty() && recordInActiveYear())
+                  || isAnonUser();
       allow create, update: if isAdmin()
-                            || (isFaculty() && request.resource.data.classId == facultyClassId() && requestInActiveYear());
+                            || (isFaculty() && requestInActiveYear());
       allow delete: if isAdmin()
-                    || (isFaculty() && resource.data.classId == facultyClassId() && recordInActiveYear());
+                    || (isFaculty() && recordInActiveYear());
     }
 
     match /vbsStudents/{vbsStudentId} {
@@ -244,6 +249,22 @@ service cloud.firestore {
         allow create, update: if isAdmin() || isFaculty();
         allow delete: if isAdmin() || isFaculty();
       }
+    }
+
+    // B8 — Announcements: anyone can read, only admins can write
+    match /announcements/{announcementId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // C3 — Homework / Assignment Tracker
+    match /homework/{homeworkId} {
+      allow read: if true;
+      allow create, update, delete: if isAdmin() || isFaculty();
+    }
+    match /homeworkSubmissions/{submissionId} {
+      allow read: if true;
+      allow write: if isAdmin() || isFaculty();
     }
   }
 }

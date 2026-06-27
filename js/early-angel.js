@@ -773,15 +773,12 @@ function clearStudentSelection({ keepInput = false } = {}) {
         if (searchInput) searchInput.value = '';
     }
 
-    if (isFacultyRole()) {
-        updateClassField(false, EA_STATE.roleData?.classId || '');
-    } else {
-        updateClassField(true, '');
-    }
+    // Global mode: class stays editable until an existing student is picked.
+    updateClassField(true, '');
 
     const hint = document.getElementById('ea-student-mode-hint');
     if (hint) {
-        hint.textContent = 'Global search: type to fetch student name and class suggestions.';
+        hint.textContent = 'Global search: type any student’s name across all classes, or add a new one.';
     }
 }
 
@@ -810,30 +807,122 @@ function selectExistingStudent(student) {
     hideStudentSuggestions();
 }
 
-function selectNewStudentFromInput(studentName) {
-    EA_STATE.selectedStudent = {
-        mode: 'new',
-        studentId: '',
-        studentName: studentName,
-        classId: isFacultyRole() ? String(EA_STATE.roleData?.classId || '') : '',
-        displayText: studentName,
-    };
+// Next global sequential student id (max numeric id + 1), derived from loaded students.
+function getNextEaStudentId() {
+    let maxNum = 0;
+    (EA_STATE.students || []).forEach(s => {
+        const raw = s.studentId ?? s.id;
+        const n = parseInt(raw, 10);
+        if (!Number.isNaN(n) && String(n) === String(raw) && n > maxNum) maxNum = n;
+    });
+    return String(maxNum + 1);
+}
 
-    const hiddenInput = document.getElementById('ea-selected-student-id');
-    if (hiddenInput) hiddenInput.value = '';
-
-    if (isFacultyRole()) {
-        updateClassField(false, EA_STATE.roleData?.classId || '');
-    } else {
-        updateClassField(true, document.getElementById('ea-class-input')?.value || '');
+// Next register number for a class (classNum*100 + nextSeq), from actual enrollments.
+async function computeNextRegisterNo(classId) {
+    const activeYear = EA_STATE.activeAcademicYearId;
+    const classNum = (typeof getClassNumber === 'function') ? getClassNumber(classId) : null;
+    let maxSeq = 0;
+    try {
+        const snap = await window.getDocs(window.query(
+            window.collection(window.db, 'enrollments'),
+            window.where('academicYearId', '==', activeYear),
+            window.where('classId', '==', classId)
+        ));
+        snap.forEach(d => {
+            const reg = Number((d.data() || {}).registerNo);
+            if (!Number.isNaN(reg)) {
+                const seq = classNum != null ? reg - classNum * 100 : reg;
+                if (seq > maxSeq) maxSeq = seq;
+            }
+        });
+    } catch (e) {
+        console.warn('register compute failed:', e);
     }
+    const nextSeq = maxSeq + 1;
+    return classNum != null
+        ? parseInt(`${classNum}${String(nextSeq).padStart(2, '0')}`, 10)
+        : nextSeq;
+}
 
-    const hint = document.getElementById('ea-student-mode-hint');
-    if (hint) {
-        hint.textContent = 'New student mode. This name was not selected from suggestions.';
+// Open the "Add New Student" dialog: enter name + pick class → Student ID and
+// Register No auto-fill from the DB → creates the student + enrollment, then
+// selects them so the Early Angel entry can be saved.
+async function openEarlyAngelAddStudent(prefillName) {
+    const classesOptions = (EA_STATE.classes || [])
+        .slice()
+        .sort((a, b) => compareClassIds(a.id, b.id))
+        .map(c => `<option value="${escapeHtml(c.id)}">${escapeHtml(c.name || c.id)}</option>`)
+        .join('');
+    const defaultClass = isFacultyRole() ? String(EA_STATE.roleData?.classId || '') : '';
+
+    const result = await Swal.fire({
+        title: 'Add New Student',
+        html: `
+            <input id="ea-add-name" class="swal2-input" placeholder="Student name" value="${escapeHtml(prefillName || '')}">
+            <select id="ea-add-class" class="swal2-input"><option value="">Select class</option>${classesOptions}</select>
+            <input id="ea-add-studentid" class="swal2-input" placeholder="Student ID (auto)" readonly>
+            <input id="ea-add-registerno" class="swal2-input" placeholder="Register No (select class)" readonly>
+        `,
+        focusConfirm: false,
+        showCancelButton: true,
+        confirmButtonText: 'Add & Select',
+        didOpen: () => {
+            const classSel = document.getElementById('ea-add-class');
+            const idEl = document.getElementById('ea-add-studentid');
+            const regEl = document.getElementById('ea-add-registerno');
+            if (idEl) idEl.value = getNextEaStudentId();
+            const onClassChange = async () => {
+                const cid = classSel.value;
+                if (!cid) { regEl.value = ''; return; }
+                regEl.value = 'Loading…';
+                regEl.value = String(await computeNextRegisterNo(cid));
+            };
+            classSel?.addEventListener('change', onClassChange);
+            if (defaultClass) { classSel.value = defaultClass; onClassChange(); }
+        },
+        preConfirm: () => {
+            const name = String(document.getElementById('ea-add-name')?.value || '').trim();
+            const classId = String(document.getElementById('ea-add-class')?.value || '').trim();
+            const studentId = String(document.getElementById('ea-add-studentid')?.value || '').trim();
+            const registerNo = parseInt(document.getElementById('ea-add-registerno')?.value || '', 10);
+            if (!name) { Swal.showValidationMessage('Student name is required.'); return false; }
+            if (!classId) { Swal.showValidationMessage('Please select a class.'); return false; }
+            if (!studentId) { Swal.showValidationMessage('Could not assign a Student ID. Reload and try again.'); return false; }
+            return { name, classId, studentId, registerNo };
+        }
+    });
+
+    if (!result.isConfirmed || !result.value) return;
+    const { name, classId, studentId, registerNo } = result.value;
+
+    showSpinner();
+    try {
+        const parts = name.split(/\s+/);
+        const firstName = parts[0];
+        const lastName = parts.slice(1).join(' ');
+        const studentRec = { studentId, firstName, lastName, classId };
+
+        await window.setDoc(window.doc(window.db, 'students', String(studentId)), studentRec, { merge: true });
+        await window.upsertEnrollmentForStudent(
+            { ...studentRec, ...(registerNo && !Number.isNaN(registerNo) ? { _hintRegisterNo: registerNo } : {}) },
+            EA_STATE.user?.uid || ''
+        );
+
+        // Optimistic local add so search/suggestions find them immediately
+        EA_STATE.students.push({ id: studentId, ...studentRec, registerNo: (registerNo && !Number.isNaN(registerNo)) ? registerNo : null });
+        rebuildSearchIndex();
+
+        createAuditLog('early_angel_student_added', { studentId, classId, name });
+
+        // Lock them in as the selected student for the entry
+        selectExistingStudent({ studentId, studentName: name, classId, source: 'students' });
+        showSuccess('Student added', `${name} added to ${getClassLabel(classId)}. Now click “Save Early Angel Entry”.`);
+    } catch (err) {
+        showError('Failed to add student: ' + err.message);
+    } finally {
+        hideSpinner();
     }
-
-    hideStudentSuggestions();
 }
 
 function hideStudentSuggestions() {
@@ -954,8 +1043,8 @@ function renderStudentSuggestions(rawTerm) {
     addAsNew.dataset.kind = 'new';
     addAsNew.dataset.studentName = rawTerm.trim();
     addAsNew.innerHTML = `
-        <span class="ea-suggestion-title">Use "${escapeHtml(rawTerm.trim())}" as new student</span>
-        <span class="ea-suggestion-meta">This option is always shown at the bottom.</span>
+        <span class="ea-suggestion-title"><i class="fas fa-user-plus"></i> Add new student: "${escapeHtml(rawTerm.trim())}"</span>
+        <span class="ea-suggestion-meta">Enter class to auto-assign ID &amp; register number.</span>
     `;
     box.appendChild(addAsNew);
 
@@ -979,10 +1068,8 @@ function handleSuggestionClick(e) {
 
     if (kind === 'new') {
         const name = String(option.dataset.studentName || '').trim();
-        if (!name) return;
-        const input = document.getElementById('ea-student-search-input');
-        if (input) input.value = name;
-        selectNewStudentFromInput(name);
+        hideStudentSuggestions();
+        openEarlyAngelAddStudent(name);
     }
 }
 
@@ -1092,6 +1179,9 @@ function renderEntriesTable() {
             <td>${escapeHtml(getClassLabel(row.classId))}</td>
             <td>${escapeHtml(row.studentName || row.studentId || '-')}</td>
             <td>
+                <button type="button" class="btn btn-secondary btn-sm ea-edit-name-btn" data-student-id="${escapeHtml(row.studentId || '')}" data-student-name="${escapeHtml(row.studentName || '')}" title="Correct the student's name">
+                    <i class="fas fa-edit"></i> Edit
+                </button>
                 <button type="button" class="btn btn-danger btn-sm ea-delete-entry-btn" data-entry-id="${escapeHtml(row.id || '')}">
                     <i class="fas fa-trash"></i> Delete
                 </button>
@@ -1141,6 +1231,12 @@ async function deleteEntryById(entryId) {
 }
 
 async function handleEntriesTableClick(e) {
+    const editBtn = e.target.closest('.ea-edit-name-btn');
+    if (editBtn) {
+        await editEaStudentName(String(editBtn.dataset.studentId || '').trim(), String(editBtn.dataset.studentName || '').trim());
+        return;
+    }
+
     const deleteBtn = e.target.closest('.ea-delete-entry-btn');
     if (!deleteBtn) return;
 
@@ -1150,6 +1246,61 @@ async function handleEntriesTableClick(e) {
     }
 
     await deleteEntryById(entryId);
+}
+
+// Correct a student's name so future searches/entries show the right spelling.
+// Updates the master students record AND the denormalised name on this student's
+// existing Early Angel entries.
+async function editEaStudentName(studentId, currentName) {
+    if (!studentId) return showError('Cannot edit: this entry has no linked student record.');
+
+    const result = await Swal.fire({
+        title: 'Edit Student Name',
+        input: 'text',
+        inputValue: currentName,
+        inputPlaceholder: 'Correct full name',
+        showCancelButton: true,
+        confirmButtonText: 'Save',
+        preConfirm: (val) => {
+            const v = String(val || '').trim();
+            if (!v) { Swal.showValidationMessage('Name cannot be empty.'); return false; }
+            return v;
+        }
+    });
+    if (!result.isConfirmed) return;
+
+    const newName = String(result.value || '').trim();
+    const parts = newName.split(/\s+/);
+    const firstName = parts[0];
+    const lastName = parts.slice(1).join(' ');
+
+    showSpinner();
+    try {
+        // 1) Master student record (fixes future searches/suggestions)
+        await window.setDoc(window.doc(window.db, 'students', String(studentId)),
+            { studentId, firstName, lastName }, { merge: true });
+
+        // 2) This student's existing entries carry a denormalised studentName — update them
+        const affected = (EA_STATE.entries || []).filter(en => String(en.studentId) === String(studentId));
+        await Promise.all(affected.map(en =>
+            window.setDoc(window.doc(window.db, 'earlyAngelEntries', String(en.id)),
+                { studentName: newName }, { merge: true })
+        ));
+
+        // Optimistic local update
+        const s = (EA_STATE.students || []).find(st => String(st.studentId ?? st.id) === String(studentId));
+        if (s) { s.firstName = firstName; s.lastName = lastName; }
+        (EA_STATE.entries || []).forEach(en => { if (String(en.studentId) === String(studentId)) en.studentName = newName; });
+        rebuildSearchIndex();
+        renderAllTables();
+
+        createAuditLog('early_angel_student_renamed', { studentId, newName, entriesUpdated: affected.length });
+        showSuccess('Name updated', `Updated to “${newName}”.`);
+    } catch (err) {
+        showError('Failed to update name: ' + err.message);
+    } finally {
+        hideSpinner();
+    }
 }
 
 function renderAllTables() {
@@ -1191,8 +1342,9 @@ async function saveEntry(e) {
         ? String(selection.classId || '')
         : String(classInput?.value || '').trim();
 
-    if (isFacultyRole()) {
-        classId = String(EA_STATE.roleData?.classId || classId || '');
+    // For new (manually typed) students with no class, faculty's own class is the default
+    if (!classId && isFacultyRole()) {
+        classId = String(EA_STATE.roleData?.classId || '');
     }
 
     if (!classId) {
@@ -1207,44 +1359,48 @@ async function saveEntry(e) {
     }
 
     const isNewStudent = selection.mode !== 'existing';
-    if (isNewStudent) {
-        const nameSlug = slugify(studentName) || 'student';
-        const classSlug = slugify(classId) || 'class';
-        studentId = `ea_new_${nameSlug}_${classSlug}`;
+    if (isNewStudent || !studentId) {
+        // early_angel_entries.student_id has a FK to students(student_id), so the
+        // student must exist first. Open the Add Student dialog (auto ID + register),
+        // which creates them and selects them — then the faculty saves again.
+        openEarlyAngelAddStudent(studentName);
+        return;
     }
 
     const nowIso = new Date().toISOString();
-    const entryTime = getTimeLabelFromIso(nowIso);
-    const entryDocId = `${EA_STATE.activeAcademicYearId}_${classId}_${entryDate}_${studentId}`;
+    const entryTime = new Date(nowIso).toTimeString().slice(0, 8); // HH:MM:SS for Postgres TIME
 
     showSpinner();
     try {
-        const entryRef = doc(window.db, 'earlyAngelEntries', entryDocId);
-        const existingSnap = await getDoc(entryRef);
-        if (existingSnap.exists()) {
+        // Check for duplicate: same student, same date
+        const { query: q, collection: col, where: wh, getDocs } = window;
+        const dupSnap = await getDocs(q(col(window.db, 'earlyAngelEntries'),
+            wh('classId', '==', classId),
+            wh('studentId', '==', studentId),
+            wh('entryDate', '==', entryDate)));
+        if (!dupSnap.empty) {
             return showError('Only one entry per day is allowed for a student. This entry already exists.');
         }
 
         const entryPayload = withAcademicYear({
-            id: entryDocId,
             classId,
             studentId,
             studentName,
+            category: 'Early Angel',
+            points: 1,
             entryDate,
             entryTime,
-            isNewStudent,
             createdAt: nowIso,
-            createdBy: EA_STATE.user?.uid || 'unknown',
         });
 
-        await setDoc(entryRef, entryPayload, { merge: false });
+        const { addDoc: aDoc, collection: col2 } = window;
+        const saved = await aDoc(col2(window.db, 'earlyAngelEntries'), entryPayload);
 
         createAuditLog('early_angel_entry_saved', {
-            entryId: entryDocId,
+            entryId: saved?.id || null,
             classId,
             studentId,
             studentName,
-            isNewStudent,
             entryDate,
             entryTime,
             academicYearId: EA_STATE.activeAcademicYearId,
@@ -1308,6 +1464,9 @@ function setupUiListeners() {
     });
 
     document.getElementById('ea-student-suggestions')?.addEventListener('click', handleSuggestionClick);
+    document.getElementById('ea-add-student-btn')?.addEventListener('click', () => {
+        openEarlyAngelAddStudent(document.getElementById('ea-student-search-input')?.value || '');
+    });
     document.getElementById('ea-entry-form')?.addEventListener('submit', saveEntry);
     document.getElementById('ea-table-search')?.addEventListener('input', renderAllTables);
     document.querySelector('#ea-entries-table tbody')?.addEventListener('click', handleEntriesTableClick);
@@ -1341,28 +1500,20 @@ async function loadClasses() {
 }
 
 function buildStudentsQuery() {
-    if (isFacultyRole()) {
-        return query(collection(window.db, 'students'), where('classId', '==', String(EA_STATE.roleData?.classId || '')));
-    }
+    // Early Angel is a school-wide program: every faculty can mark any student,
+    // so always load ALL students (no per-class scoping).
     return collection(window.db, 'students');
 }
 
 function buildEarlyAngelQuery(collectionName) {
-    const constraints = [];
-
-    if (isFacultyRole()) {
-        constraints.push(where('classId', '==', String(EA_STATE.roleData?.classId || '')));
-    }
-
+    // Year-scoped only — all classes are visible to every faculty.
     if (EA_STATE.activeAcademicYearId) {
-        constraints.push(where('academicYearId', '==', EA_STATE.activeAcademicYearId));
+        return query(
+            collection(window.db, collectionName),
+            where('academicYearId', '==', EA_STATE.activeAcademicYearId)
+        );
     }
-
-    if (constraints.length === 0) {
-        return collection(window.db, collectionName);
-    }
-
-    return query(collection(window.db, collectionName), ...constraints);
+    return collection(window.db, collectionName);
 }
 
 function startRealtimeListeners() {
@@ -1433,11 +1584,9 @@ async function initializePortal(user) {
     setupUiListeners();
     await loadClasses();
 
-    if (isFacultyRole()) {
-        updateClassField(false, EA_STATE.roleData.classId || '');
-    } else {
-        updateClassField(true, '');
-    }
+    // Global mode: class is editable for everyone (faculty can mark any class).
+    // Pre-fill the faculty's own class as a convenience; it stays changeable.
+    updateClassField(true, isFacultyRole() ? (EA_STATE.roleData.classId || '') : '');
 
     setDateToToday();
     refreshInstantReportDateOptions();
